@@ -1,4 +1,4 @@
--- Chống chạy trùng GUI (Anti-Dupe)
+-- Chống chạy trùng GUI (Anti-Dupe) Fix
 if MT_LOADED and not _G.MT_DEBUG == true then
     return
 end
