@@ -1,0 +1,140 @@
+-- Rayfield UI Script for Roblox Executor
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "Slap Script",
+   LoadingTitle = "Loading Script...",
+   LoadingSubtitle = "by Script Creator",
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = nil,
+      FileName = "SlapConfig"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
+   KeySystem = false,
+   KeySettings = {
+      Title = "Key System",
+      Subtitle = "Key System",
+      Note = "No method of obtaining the key is provided",
+      FileName = "Key",
+      SaveKey = true,
+      GrabKeyFromSite = false,
+      Key = {"Hello"}
+   }
+})
+
+-- Tab chính
+local MainTab = Window:CreateTab("Main", 4483362458)
+
+-- Section cho Attack
+local AttackSection = MainTab:CreateSection("Attack")
+
+local attackEnabled = false
+
+local AttackToggle = MainTab:CreateToggle({
+   Name = "Auto Attack",
+   CurrentValue = false,
+   Flag = "AutoAttack",
+   Callback = function(Value)
+      attackEnabled = Value
+      if attackEnabled then
+         spawn(function()
+            while attackEnabled do
+               local args = {1}
+               game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("Hit"):FireServer(unpack(args))
+               wait(0.1) -- Delay giữa các lần attack
+            end
+         end)
+      end
+   end,
+})
+
+local AttackButton = MainTab:CreateButton({
+   Name = "Attack Once",
+   Callback = function()
+      local args = {1}
+      game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("Hit"):FireServer(unpack(args))
+      Rayfield:Notify({
+         Title = "Attack",
+         Content = "Attack executed!",
+         Duration = 2,
+         Image = 4483362458,
+      })
+   end,
+})
+
+-- Section cho Vote
+local VoteSection = MainTab:CreateSection("Vote System")
+
+local playerNameInput = ""
+
+local PlayerInput = MainTab:CreateInput({
+   Name = "Player Name",
+   PlaceholderText = "Enter player name...",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text)
+      playerNameInput = Text
+      print("Player name set to: " .. Text)
+   end,
+})
+
+local VoteButton = MainTab:CreateButton({
+   Name = "Vote Player",
+   Callback = function()
+      if playerNameInput ~= "" then
+         local args = {playerNameInput}
+         game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("ChooseSlapper"):FireServer(unpack(args))
+         Rayfield:Notify({
+            Title = "Vote Sent",
+            Content = "Voted for: " .. playerNameInput,
+            Duration = 3,
+            Image = 4483362458,
+         })
+      else
+         Rayfield:Notify({
+            Title = "Error",
+            Content = "Please enter a player name!",
+            Duration = 3,
+            Image = 4483362458,
+         })
+      end
+   end,
+})
+
+-- Tab Settings
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+
+local SettingsSection = SettingsTab:CreateSection("Script Settings")
+
+local AttackDelaySlider = SettingsTab:CreateSlider({
+   Name = "Attack Delay (seconds)",
+   Range = {0.01, 1},
+   Increment = 0.01,
+   Suffix = "s",
+   CurrentValue = 0.1,
+   Flag = "AttackDelay",
+   Callback = function(Value)
+      print("Attack delay set to: " .. Value)
+   end,
+})
+
+local DestroyButton = SettingsTab:CreateButton({
+   Name = "Destroy UI",
+   Callback = function()
+      Rayfield:Destroy()
+   end,
+})
+
+-- Thông báo khởi động
+Rayfield:Notify({
+   Title = "Script Loaded",
+   Content = "Slap Script loaded successfully!",
+   Duration = 5,
+   Image = 4483362458,
+})
+
+print("Slap Script loaded!")
