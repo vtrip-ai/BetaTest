@@ -1,39 +1,49 @@
--- Chống dupe GUI và Check Debug
-if MT_LOADED and not _G.MT_DEBUG == true then
+-- Anti-dupe + debug check
+if getgenv().MT_LOADED and not getgenv().MT_DEBUG then
     return
 end
 pcall(function() getgenv().MT_LOADED = true end)
 
--- Đợi game load hoàn tất
-if not game:IsLoaded() then 
-    game.Loaded:Wait() 
+-- Nếu có GUI cũ, xoá để tránh duplicate (debug vẫn cho phép)
+local EXISTING_NAME = "MT_AutoLuckyGui"
+local old = game.CoreGui:FindFirstChild(EXISTING_NAME)
+if old then
+    if not getgenv().MT_DEBUG then
+        old:Destroy()
+    else
+        -- nếu debug thì giữ GUI cũ (giúp dev dễ test)
+    end
 end
 
--- Khai báo dịch vụ
+-- Đợi game load xong
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- Services
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local lp = Players.LocalPlayer
 
--- Hàm missing xử lý fallback dữ liệu
-function missing(t, f, fallback)
+-- helper missing
+local function missing(t, f, fallback)
     if type(f) == t then return f end
     return fallback
 end
 
--- Cấu hình Teleport (Dùng queue_on_teleport để tự chạy lại sau khi hop)
-local TeleportCheck = false
+-- Teleport queue helper (syn.queue_on_teleport / queue_on_teleport)
 local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
 
-lp.OnTeleport:Connect(function(State)
-    if not TeleportCheck and queueteleport then
-        TeleportCheck = true
-        queueteleport("loadstring(game:HttpGet('https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky'))()")
-    end
-end)
+-- URL script để queue_on_teleport (giữ nguyên hoặc thay)
+local AUTOLUCKY_URL = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
 
--- GUI Mobile (Draggable)
-local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+-- GUI (draggable)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = EXISTING_NAME
+ScreenGui.Parent = game.CoreGui
+ScreenGui.ResetOnSpawn = false
+
 local MainFrame = Instance.new("Frame", ScreenGui)
 local ToggleBtn = Instance.new("TextButton", MainFrame)
 
@@ -42,74 +52,153 @@ MainFrame.Position = UDim2.new(0.5, -70, 0.1, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 MainFrame.Active = true
 MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
 
 ToggleBtn.Size = UDim2.new(1, -10, 1, -10)
 ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
-ToggleBtn.Text = "AUTO: OFF"
 ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
-ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+ToggleBtn.Parent = MainFrame
 
-local Toggled = false
+-- Obby paths
 local ObbyPaths = {
     "MoneyObby3End",
     "MoneyObby2End",
     "MoneyObby1End"
 }
 
--- Hàm Server Hop
+-- Toggled mặc định: nếu queue_on_teleport set _G.MT_AUTO = true ở lần trước, giữ auto
+local Toggled = missing("boolean", _G.MT_AUTO, true)
+
+local function updateToggleUI()
+    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
+    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(50,200,50) or Color3.fromRGB(200,50,50)
+end
+updateToggleUI()
+
+-- Robust ServerHop: thử từng server, nếu Teleport thất bại (full hoặc lỗi) sẽ tiếp tục; nếu không tìm thấy server nào phù hợp thì đợi và retry
 local function ServerHop()
-    local success, result = pcall(function()
-        local servers = HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"))
-        for _, s in pairs(servers.data) do
-            if s.playing < s.maxPlayers and s.id ~= game.JobId then
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
-                return true
+    -- ensure queueteleport will re-enable auto on the next server
+    local queue_payload = ("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)
+    pcall(function() queueteleport(queue_payload) end)
+
+    while true do
+        local ok, response = pcall(function()
+            local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+            return HttpService:JSONDecode(game:HttpGet(url))
+        end)
+
+        if ok and response and type(response.data) == "table" then
+            for _, s in ipairs(response.data) do
+                -- skip current server and full servers
+                if s.id ~= game.JobId and tostring(s.playing) and tostring(s.maxPlayers) then
+                    if s.playing < s.maxPlayers then
+                        local successTeleport = pcall(function()
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
+                        end)
+                        if successTeleport then
+                            -- teleport initiated; return to stop local loop
+                            return
+                        else
+                            -- fail -> try next server
+                        end
+                    end
+                end
             end
         end
-    end)
-    if not success or not result then
+
+        -- không tìm được server hợp lệ -> đợi chút rồi lấy lại danh sách (loop teleport như loopgoto)
         task.wait(2)
-        ServerHop() -- Re-hop nếu lỗi
     end
 end
 
--- Logic Main Loop
-ToggleBtn.MouseButton1Click:Connect(function()
-    Toggled = not Toggled
-    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
-    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
-
-    if Toggled then
-        task.spawn(function()
-            -- Check path tồn tại mỗi lần bật
+-- Core auto loop: chạy liên tục khi Toggled = true
+local autoLoopThread
+local function startAutoLoop()
+    if autoLoopThread and task.spawn then return end
+    autoLoopThread = task.spawn(function()
+        while Toggled do
+            -- confirm shared folder exists
             local SharedFolder = workspace:FindFirstChild("MoneyMap_SharedInstances")
-            if not SharedFolder then 
-                warn("Path không tồn tại!") 
-                return 
+            if not SharedFolder then
+                warn("Path không tồn tại! Đợi 5s rồi thử lại.")
+                task.wait(5)
+                continue
             end
 
             for _, name in ipairs(ObbyPaths) do
                 if not Toggled then break end
                 local target = SharedFolder:FindFirstChild(name)
-                
-                if target and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
-                    -- LoopGoto / Teleport
-                    lp.Character.HumanoidRootPart.CFrame = target.CFrame
-                    task.wait(2)
-                    
-                    -- Fire TouchTransmitler 3 lần
-                    for i = 1, 3 do
-                        firetouchinterest(lp.Character.HumanoidRootPart, target, 0)
-                        task.wait(0.1)
-                        firetouchinterest(lp.Character.HumanoidRootPart, target, 1)
+                local char = lp.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if target and hrp then
+                    -- loop-goto behavior: move repeatedly to target (giảm rủi ro "server hop full" vì đây client-side movement)
+                    local tries = 0
+                    while Toggled and tries < 6 do
+                        if not lp.Character or not lp.Character:FindFirstChild("HumanoidRootPart") then break end
+                        lp.Character.HumanoidRootPart.CFrame = target.CFrame
+                        task.wait(0.6)
+                        -- Fire touch a few times
+                        for i = 1, 3 do
+                            pcall(function()
+                                firetouchinterest(lp.Character.HumanoidRootPart, target, 0)
+                                task.wait(0.05)
+                                firetouchinterest(lp.Character.HumanoidRootPart, target, 1)
+                            end)
+                        end
+                        tries = tries + 1
+                        task.wait(0.4)
                     end
                 end
+                task.wait(0.15)
             end
 
-            -- Sau khi xong 3 cái hoặc nếu lỗi/full thì hop
+            -- after finishing cycle, if still toggled -> server hop (looped inside ServerHop)
             if Toggled then
                 ServerHop()
+                -- If teleport initiated successfully, the script will be re-queued and the current execution will end.
+                -- If ServerHop returns (shouldn't if teleport succeeded), we loop again.
             end
-        end)
+            -- small sleep to avoid tight loop in case nothing happened
+            task.wait(1)
+        end
+        autoLoopThread = nil
+    end)
+end
+
+local function stopAutoLoop()
+    Toggled = false
+    updateToggleUI()
+end
+
+-- Toggle button behavior
+ToggleBtn.MouseButton1Click:Connect(function()
+    Toggled = not Toggled
+    updateToggleUI()
+    if Toggled then
+        startAutoLoop()
+    else
+        -- stopping will naturally let the spawned loop exit
     end
 end)
+
+-- Auto-start if requested (from queued teleport or default)
+if Toggled then
+    startAutoLoop()
+end
+
+-- Reconnect on character spawn to keep behavior after death
+lp.CharacterAdded:Connect(function(char)
+    -- reset HRP-based actions; autoLoop will detect new HRP automatically
+    task.wait(1)
+    if Toggled then
+        -- ensure loop is running after respawn
+        startAutoLoop()
+    end
+end)
+
+-- Optional: expose for debugging
+getgenv().MT_AutoLucky = {
+    IsRunning = function() return Toggled end,
+    Stop = function() Toggled = false end,
+    Start = function() Toggled = true; startAutoLoop() end,
+}
