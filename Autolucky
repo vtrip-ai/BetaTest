@@ -1,204 +1,172 @@
--- Anti-dupe + debug check
-if getgenv().MT_LOADED and not getgenv().MT_DEBUG then
-    return
-end
-pcall(function() getgenv().MT_LOADED = true end)
+-- (Giữ nguyên header, UI và cấu trúc như MT_AutoLucky_vNext)
+-- Thay thế CHỈ function attemptCollectTarget bằng phiên bản nâng cấp sau:
 
--- Nếu có GUI cũ, xoá để tránh duplicate (debug vẫn cho phép)
-local EXISTING_NAME = "MT_AutoLuckyGui"
-local old = game.CoreGui:FindFirstChild(EXISTING_NAME)
-if old then
-    if not getgenv().MT_DEBUG then
-        old:Destroy()
-    else
-        -- nếu debug thì giữ GUI cũ (giúp dev dễ test)
+-- Helper: snapshot tất cả Number/Int value dưới player (leaderstats + player descendants)
+local function snapshotPlayerNumbers(player)
+    local snap = {}
+    local function scan(obj)
+        for _, v in pairs(obj:GetChildren()) do
+            if v:IsA("NumberValue") or v:IsA("IntValue") then
+                snap[v] = v.Value
+            end
+            scan(v)
+        end
     end
+    -- leaderstats thường ở player root
+    if player then
+        local leader = player:FindFirstChild("leaderstats")
+        if leader then scan(leader) end
+        -- scan player itself for any Number/Int values
+        scan(player)
+    end
+    return snap
 end
 
--- Đợi game load xong
-if not game:IsLoaded() then
-    game.Loaded:Wait()
+local function compareSnapshots(before, after)
+    -- return true, {name=diff,...} if any numeric increased
+    local diffs = {}
+    for v, old in pairs(before) do
+        local ok, curr = pcall(function() return v.Value end)
+        if ok and type(curr) == "number" and curr > old then
+            table.insert(diffs, {obj = v, before = old, after = curr})
+        end
+    end
+    return #diffs > 0, diffs
 end
 
--- Services
-local Players = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
-local lp = Players.LocalPlayer
+-- Attempt collect target: combines Touched + Value-change + position heuristics
+local function attemptCollectTarget(target)
+    if not target or not target.Parent then return false, "no_target" end
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "no_hrp" end
 
--- helper missing
-local function missing(t, f, fallback)
-    if type(f) == t then return f end
-    return fallback
-end
+    -- pre-snapshot numeric values
+    local beforeSnap = snapshotPlayerNumbers(lp)
 
--- Teleport queue helper (syn.queue_on_teleport / queue_on_teleport)
-local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
+    local touchedByPlayer = false
+    local conn
+    if target and target:IsA("BasePart") then
+        conn = target.Touched:Connect(function(hit)
+            if not hit then return end
+            if not lp.Character then return end
+            if hit:IsDescendantOf(lp.Character) then
+                touchedByPlayer = true
+            end
+        end)
+    else
+        -- if target is not a BasePart, try to find a primary part inside it
+        local primary = target:IsA("Model") and target.PrimaryPart or nil
+        if primary and primary:IsA("BasePart") then
+            conn = primary.Touched:Connect(function(hit)
+                if not hit then return end
+                if hit:IsDescendantOf(lp.Character) then
+                    touchedByPlayer = true
+                end
+            end)
+        end
+    end
 
--- URL script để queue_on_teleport (giữ nguyên hoặc thay)
-local AUTOLUCKY_URL = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
+    local startTime = os.clock()
+    local attempts = 0
+    local succeeded = false
+    local detectionMethod = nil
+    local detectionInfo = ""
 
--- GUI (draggable)
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = EXISTING_NAME
-ScreenGui.Parent = game.CoreGui
-ScreenGui.ResetOnSpawn = false
+    while attempts < MAX_ATTEMPTS_PER_TARGET and (os.clock() - startTime) < MAX_SECONDS_PER_TARGET do
+        if not lp.Character then break end
+        char = lp.Character
+        hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then break end
 
-local MainFrame = Instance.new("Frame", ScreenGui)
-local ToggleBtn = Instance.new("TextButton", MainFrame)
+        -- Quick check: immediate success if player already far from target (maybe teleported instantly)
+        if (hrp.Position - target.Position).Magnitude > 15 then
+            succeeded = true
+            detectionMethod = "moved_away"
+            detectionInfo = ("dist=%.1f"):format((hrp.Position - target.Position).Magnitude)
+            break
+        end
 
-MainFrame.Size = UDim2.new(0, 140, 0, 45)
-MainFrame.Position = UDim2.new(0.5, -70, 0.1, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+        -- Move close and firetouchinterest
+        pcall(function()
+            hrp.CFrame = target.CFrame + Vector3.new(0, 1.2, 0)
+        end)
+        task.wait(math.max(0.12, MOVE_INTERVAL * 0.5))
 
-ToggleBtn.Size = UDim2.new(1, -10, 1, -10)
-ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
-ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
-ToggleBtn.Parent = MainFrame
-
--- Obby paths
-local ObbyPaths = {
-    "MoneyObby3End",
-    "MoneyObby2End",
-    "MoneyObby1End"
-}
-
--- Toggled mặc định: nếu queue_on_teleport set _G.MT_AUTO = true ở lần trước, giữ auto
-local Toggled = missing("boolean", _G.MT_AUTO, true)
-
-local function updateToggleUI()
-    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
-    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(50,200,50) or Color3.fromRGB(200,50,50)
-end
-updateToggleUI()
-
--- Robust ServerHop: thử từng server, nếu Teleport thất bại (full hoặc lỗi) sẽ tiếp tục; nếu không tìm thấy server nào phù hợp thì đợi và retry
-local function ServerHop()
-    -- ensure queueteleport will re-enable auto on the next server
-    local queue_payload = ("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)
-    pcall(function() queueteleport(queue_payload) end)
-
-    while true do
-        local ok, response = pcall(function()
-            local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
-            return HttpService:JSONDecode(game:HttpGet(url))
+        pcall(function()
+            firetouchinterest(hrp, target, 0)
+            task.wait(0.035)
+            firetouchinterest(hrp, target, 1)
         end)
 
-        if ok and response and type(response.data) == "table" then
-            for _, s in ipairs(response.data) do
-                -- skip current server and full servers
-                if s.id ~= game.JobId and tostring(s.playing) and tostring(s.maxPlayers) then
-                    if s.playing < s.maxPlayers then
-                        local successTeleport = pcall(function()
-                            TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
-                        end)
-                        if successTeleport then
-                            -- teleport initiated; return to stop local loop
-                            return
-                        else
-                            -- fail -> try next server
-                        end
-                    end
+        attempts = attempts + 1
+
+        -- Wait short while and check detection signals
+        local checkDeadline = os.clock() + AFTER_TOUCH_SETTLE
+        while os.clock() < checkDeadline do
+            -- 1) if touched event fired locally
+            if touchedByPlayer then
+                -- double-check maybe server registers reward later -> also check numeric after short wait
+                task.wait(0.12)
+                local afterSnap = snapshotPlayerNumbers(lp)
+                local changed, diffs = compareSnapshots(beforeSnap, afterSnap)
+                if changed then
+                    succeeded = true
+                    detectionMethod = "touched+value_increase"
+                    detectionInfo = ("value_increase_count=%d"):format(#diffs)
+                    break
+                else
+                    -- even if no value change, accept Touched as success for pure obby that doesn't reward value
+                    succeeded = true
+                    detectionMethod = "touched_local"
+                    detectionInfo = ("attempts=%d"):format(attempts)
+                    break
                 end
             end
+
+            -- 2) check numeric increase regardless of touched
+            local afterSnap2 = snapshotPlayerNumbers(lp)
+            local changed2, diffs2 = compareSnapshots(beforeSnap, afterSnap2)
+            if changed2 then
+                succeeded = true
+                detectionMethod = "value_increase"
+                detectionInfo = ("value_increase_count=%d"):format(#diffs2)
+                break
+            end
+
+            -- 3) check if target was moved/disabled by server (some obbies change property)
+            if not target.Parent or not target:IsDescendantOf(workspace) then
+                succeeded = true
+                detectionMethod = "target_removed"
+                detectionInfo = "removed"
+                break
+            end
+
+            task.wait(0.03)
         end
 
-        -- không tìm được server hợp lệ -> đợi chút rồi lấy lại danh sách (loop teleport như loopgoto)
-        task.wait(2)
+        if succeeded then break end
+
+        -- small pause before next attempt
+        task.wait(0.12)
     end
-end
 
--- Core auto loop: chạy liên tục khi Toggled = true
-local autoLoopThread
-local function startAutoLoop()
-    if autoLoopThread and task.spawn then return end
-    autoLoopThread = task.spawn(function()
-        while Toggled do
-            -- confirm shared folder exists
-            local SharedFolder = workspace:FindFirstChild("MoneyMap_SharedInstances")
-            if not SharedFolder then
-                warn("Path không tồn tại! Đợi 5s rồi thử lại.")
-                task.wait(5)
-                continue
-            end
+    -- cleanup connection
+    if conn and conn.Connected then
+        pcall(function() conn:Disconnect() end)
+    end
 
-            for _, name in ipairs(ObbyPaths) do
-                if not Toggled then break end
-                local target = SharedFolder:FindFirstChild(name)
-                local char = lp.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if target and hrp then
-                    -- loop-goto behavior: move repeatedly to target (giảm rủi ro "server hop full" vì đây client-side movement)
-                    local tries = 0
-                    while Toggled and tries < 6 do
-                        if not lp.Character or not lp.Character:FindFirstChild("HumanoidRootPart") then break end
-                        lp.Character.HumanoidRootPart.CFrame = target.CFrame
-                        task.wait(0.6)
-                        -- Fire touch a few times
-                        for i = 1, 3 do
-                            pcall(function()
-                                firetouchinterest(lp.Character.HumanoidRootPart, target, 0)
-                                task.wait(0.05)
-                                firetouchinterest(lp.Character.HumanoidRootPart, target, 1)
-                            end)
-                        end
-                        tries = tries + 1
-                        task.wait(0.4)
-                    end
-                end
-                task.wait(0.15)
-            end
-
-            -- after finishing cycle, if still toggled -> server hop (looped inside ServerHop)
-            if Toggled then
-                ServerHop()
-                -- If teleport initiated successfully, the script will be re-queued and the current execution will end.
-                -- If ServerHop returns (shouldn't if teleport succeeded), we loop again.
-            end
-            -- small sleep to avoid tight loop in case nothing happened
-            task.wait(1)
-        end
-        autoLoopThread = nil
-    end)
-end
-
-local function stopAutoLoop()
-    Toggled = false
-    updateToggleUI()
-end
-
--- Toggle button behavior
-ToggleBtn.MouseButton1Click:Connect(function()
-    Toggled = not Toggled
-    updateToggleUI()
-    if Toggled then
-        startAutoLoop()
+    if succeeded then
+        return true, ("%s %s"):format(tostring(detectionMethod or "unknown"), tostring(detectionInfo or ""))
     else
-        -- stopping will naturally let the spawned loop exit
+        -- final fallback: re-scan numeric values once more before giving up
+        local afterFinal = snapshotPlayerNumbers(lp)
+        local changedFinal, diffsFinal = compareSnapshots(beforeSnap, afterFinal)
+        if changedFinal then
+            return true, ("value_increase_final=%d"):format(#diffsFinal)
+        end
+        return false, ("failed attempts=%d elapsed=%.1fs"):format(attempts, os.clock() - startTime)
     end
-end)
-
--- Auto-start if requested (from queued teleport or default)
-if Toggled then
-    startAutoLoop()
 end
 
--- Reconnect on character spawn to keep behavior after death
-lp.CharacterAdded:Connect(function(char)
-    -- reset HRP-based actions; autoLoop will detect new HRP automatically
-    task.wait(1)
-    if Toggled then
-        -- ensure loop is running after respawn
-        startAutoLoop()
-    end
-end)
-
--- Optional: expose for debugging
-getgenv().MT_AutoLucky = {
-    IsRunning = function() return Toggled end,
-    Stop = function() Toggled = false end,
-    Start = function() Toggled = true; startAutoLoop() end,
-}
+-- (Phần còn lại của script vNext giữ nguyên — UI, loop, ServerHopImmediate, v.v.)
