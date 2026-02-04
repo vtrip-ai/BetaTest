@@ -1,44 +1,53 @@
--- Chống chạy trùng GUI (Anti-Dupe) Fix
+-- Chống dupe GUI và Check Debug
 if MT_LOADED and not _G.MT_DEBUG == true then
     return
 end
-getgenv().MT_LOADED = true
+pcall(function() getgenv().MT_LOADED = true end)
 
-local Players = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
-local lp = Players.LocalPlayer
-
--- Cấu hình Teleport khi Server Hop
-local function QueueJump()
-    local script_url = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
-    if syn and syn.queue_on_teleport then
-        syn.queue_on_teleport("loadstring(game:HttpGet('"..script_url.."'))()")
-    elseif queue_on_teleport then
-        queue_on_teleport("loadstring(game:HttpGet('"..script_url.."'))()")
-    end
+-- Đợi game load hoàn tất
+if not game:IsLoaded() then 
+    game.Loaded:Wait() 
 end
 
+-- Khai báo dịch vụ
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local lp = Players.LocalPlayer
+
+-- Hàm missing xử lý fallback dữ liệu
+function missing(t, f, fallback)
+    if type(f) == t then return f end
+    return fallback
+end
+
+-- Cấu hình Teleport (Dùng queue_on_teleport để tự chạy lại sau khi hop)
+local TeleportCheck = false
+local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
+
 lp.OnTeleport:Connect(function(State)
-    QueueJump()
+    if not TeleportCheck and queueteleport then
+        TeleportCheck = true
+        queueteleport("loadstring(game:HttpGet('https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky'))()")
+    end
 end)
 
--- Tạo GUI Mobile Friendly (Có thể kéo thả)
+-- GUI Mobile (Draggable)
 local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
 local MainFrame = Instance.new("Frame", ScreenGui)
 local ToggleBtn = Instance.new("TextButton", MainFrame)
 
-MainFrame.Size = UDim2.new(0, 150, 0, 50)
-MainFrame.Position = UDim2.new(0.5, -75, 0.2, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.Size = UDim2.new(0, 140, 0, 45)
+MainFrame.Position = UDim2.new(0.5, -70, 0.1, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 MainFrame.Active = true
-MainFrame.Draggable = true -- Hỗ trợ kéo thả trên mobile
+MainFrame.Draggable = true
 
-ToggleBtn.Size = UDim2.new(1, 0, 1, 0)
+ToggleBtn.Size = UDim2.new(1, -10, 1, -10)
+ToggleBtn.Position = UDim2.new(0, 5, 0, 5)
 ToggleBtn.Text = "AUTO: OFF"
-ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
 ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
 
 local Toggled = false
 local ObbyPaths = {
@@ -47,62 +56,57 @@ local ObbyPaths = {
     "MoneyObby1End"
 }
 
--- Hàm thực hiện Fire Touch Interest
-local function FireTouch(part)
-    local touchInterest = part:FindFirstChildOfClass("TouchTransmitter") or part:FindFirstChild("TouchInterest")
-    if touchInterest then
-        for i = 1, 3 do
-            firetouchinterest(lp.Character.HumanoidRootPart, part, 0)
-            task.wait(0.1)
-            firetouchinterest(lp.Character.HumanoidRootPart, part, 1)
-        end
-    end
-end
-
 -- Hàm Server Hop
 local function ServerHop()
-    print("Đang chuyển server...")
-    local Success, Error = pcall(function()
-        local Servers = game:GetService("HttpService"):JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"))
-        for _, s in pairs(Servers.data) do
+    local success, result = pcall(function()
+        local servers = HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"))
+        for _, s in pairs(servers.data) do
             if s.playing < s.maxPlayers and s.id ~= game.JobId then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
-                break
+                return true
             end
         end
     end)
-    if not Success then task.wait(3); ServerHop() end
+    if not success or not result then
+        task.wait(2)
+        ServerHop() -- Re-hop nếu lỗi
+    end
 end
 
--- Logic chính
+-- Logic Main Loop
 ToggleBtn.MouseButton1Click:Connect(function()
     Toggled = not Toggled
     ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
-    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(200, 0, 0)
-    
+    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+
     if Toggled then
         task.spawn(function()
-            local SharedInstances = workspace:FindFirstChild("MoneyMap_SharedInstances")
-            if not SharedInstances then 
-                warn("Không tìm thấy MoneyMap_SharedInstances")
+            -- Check path tồn tại mỗi lần bật
+            local SharedFolder = workspace:FindFirstChild("MoneyMap_SharedInstances")
+            if not SharedFolder then 
+                warn("Path không tồn tại!") 
                 return 
             end
 
             for _, name in ipairs(ObbyPaths) do
                 if not Toggled then break end
+                local target = SharedFolder:FindFirstChild(name)
                 
-                local target = SharedInstances:FindFirstChild(name)
                 if target and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
-                    -- Di chuyển tới vị trí (Teleport)
+                    -- LoopGoto / Teleport
                     lp.Character.HumanoidRootPart.CFrame = target.CFrame
-                    task.wait(2) -- Đợi 2 giây như yêu cầu
+                    task.wait(2)
                     
-                    -- Fire touch 3 lần
-                    FireTouch(target)
+                    -- Fire TouchTransmitler 3 lần
+                    for i = 1, 3 do
+                        firetouchinterest(lp.Character.HumanoidRootPart, target, 0)
+                        task.wait(0.1)
+                        firetouchinterest(lp.Character.HumanoidRootPart, target, 1)
+                    end
                 end
             end
-            
-            -- Xong 3 cái thì Server Hop
+
+            -- Sau khi xong 3 cái hoặc nếu lỗi/full thì hop
             if Toggled then
                 ServerHop()
             end
