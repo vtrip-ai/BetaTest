@@ -1,0 +1,111 @@
+-- Chống chạy trùng GUI (Anti-Dupe)
+if MT_LOADED and not _G.MT_DEBUG == true then
+    return
+end
+getgenv().MT_LOADED = true
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+
+-- Cấu hình Teleport khi Server Hop
+local function QueueJump()
+    local script_url = "https://mename.com/thes.luau"
+    if syn and syn.queue_on_teleport then
+        syn.queue_on_teleport("loadstring(game:HttpGet('"..script_url.."'))()")
+    elseif queue_on_teleport then
+        queue_on_teleport("loadstring(game:HttpGet('"..script_url.."'))()")
+    end
+end
+
+lp.OnTeleport:Connect(function(State)
+    QueueJump()
+end)
+
+-- Tạo GUI Mobile Friendly (Có thể kéo thả)
+local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+local MainFrame = Instance.new("Frame", ScreenGui)
+local ToggleBtn = Instance.new("TextButton", MainFrame)
+
+MainFrame.Size = UDim2.new(0, 150, 0, 50)
+MainFrame.Position = UDim2.new(0.5, -75, 0.2, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.Active = true
+MainFrame.Draggable = true -- Hỗ trợ kéo thả trên mobile
+
+ToggleBtn.Size = UDim2.new(1, 0, 1, 0)
+ToggleBtn.Text = "AUTO: OFF"
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+
+local Toggled = false
+local ObbyPaths = {
+    "MoneyObby3End",
+    "MoneyObby2End",
+    "MoneyObby1End"
+}
+
+-- Hàm thực hiện Fire Touch Interest
+local function FireTouch(part)
+    local touchInterest = part:FindFirstChildOfClass("TouchTransmitter") or part:FindFirstChild("TouchInterest")
+    if touchInterest then
+        for i = 1, 3 do
+            firetouchinterest(lp.Character.HumanoidRootPart, part, 0)
+            task.wait(0.1)
+            firetouchinterest(lp.Character.HumanoidRootPart, part, 1)
+        end
+    end
+end
+
+-- Hàm Server Hop
+local function ServerHop()
+    print("Đang chuyển server...")
+    local Success, Error = pcall(function()
+        local Servers = game:GetService("HttpService"):JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"))
+        for _, s in pairs(Servers.data) do
+            if s.playing < s.maxPlayers and s.id ~= game.JobId then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
+                break
+            end
+        end
+    end)
+    if not Success then task.wait(3); ServerHop() end
+end
+
+-- Logic chính
+ToggleBtn.MouseButton1Click:Connect(function()
+    Toggled = not Toggled
+    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
+    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(200, 0, 0)
+    
+    if Toggled then
+        task.spawn(function()
+            local SharedInstances = workspace:FindFirstChild("MoneyMap_SharedInstances")
+            if not SharedInstances then 
+                warn("Không tìm thấy MoneyMap_SharedInstances")
+                return 
+            end
+
+            for _, name in ipairs(ObbyPaths) do
+                if not Toggled then break end
+                
+                local target = SharedInstances:FindFirstChild(name)
+                if target and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
+                    -- Di chuyển tới vị trí (Teleport)
+                    lp.Character.HumanoidRootPart.CFrame = target.CFrame
+                    task.wait(2) -- Đợi 2 giây như yêu cầu
+                    
+                    -- Fire touch 3 lần
+                    FireTouch(target)
+                end
+            end
+            
+            -- Xong 3 cái thì Server Hop
+            if Toggled then
+                ServerHop()
+            end
+        end)
+    end
+end)
