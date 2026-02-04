@@ -12,7 +12,7 @@ local lp = Players.LocalPlayer
 
 -- Cấu hình Teleport khi Server Hop
 local function QueueJump()
-    local script_url = "https://mename.com/thes.luau"
+    local script_url = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
     if syn and syn.queue_on_teleport then
         syn.queue_on_teleport("loadstring(game:HttpGet('"..script_url.."'))()")
     elseif queue_on_teleport then
