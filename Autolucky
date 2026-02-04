@@ -1,7 +1,143 @@
--- (Giữ nguyên header, UI và cấu trúc như MT_AutoLucky_vNext)
--- Thay thế CHỈ function attemptCollectTarget bằng phiên bản nâng cấp sau:
+-- MT AutoLucky vFinal: UI reliably appears + auto-start fixed + robust loop
+-- Paste vào executor thay file cũ
 
--- Helper: snapshot tất cả Number/Int value dưới player (leaderstats + player descendants)
+-- Anti-dupe + debug check
+if getgenv().MT_LOADED and not getgenv().MT_DEBUG then return end
+pcall(function() getgenv().MT_LOADED = true end)
+
+-- CONFIG
+local EXISTING_NAME = "MT_AutoLuckyGui_vFinal"
+local AUTOLUCKY_URL = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
+local ObbyPaths = {"MoneyObby3End","MoneyObby2End","MoneyObby1End"} -- order matters
+local MAX_ATTEMPTS_PER_TARGET = 8
+local MAX_SECONDS_PER_TARGET = 12
+local MOVE_INTERVAL = 0.45
+local AFTER_TOUCH_SETTLE = 0.45
+local SERVER_LIST_LIMIT = 100
+
+-- Services
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local lp = Players.LocalPlayer
+
+-- helpers
+local function missing(t, f, fallback) if type(f) == t then return f end return fallback end
+local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
+
+-- ensure game loaded
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- clean old GUI safely
+local old = game.CoreGui:FindFirstChild(EXISTING_NAME)
+if old then
+    if not getgenv().MT_DEBUG then
+        pcall(function() old:Destroy() end)
+    end
+end
+
+-- UI creation (try CoreGui first, fallback to PlayerGui)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = EXISTING_NAME
+ScreenGui.ResetOnSpawn = false
+
+local successParent = pcall(function() ScreenGui.Parent = game.CoreGui end)
+if not successParent then
+    -- fallback to PlayerGui (some executors need this)
+    pcall(function() ScreenGui.Parent = lp:WaitForChild("PlayerGui") end)
+end
+
+-- build card
+local Card = Instance.new("Frame", ScreenGui)
+Card.Size = UDim2.new(0, 280, 0, 220)
+Card.Position = UDim2.new(0.5, -140, 0.08, 0)
+Card.BackgroundColor3 = Color3.fromRGB(30,30,30)
+Card.BorderSizePixel = 0
+Card.Active = true
+Card.Draggable = true
+
+local Title = Instance.new("TextLabel", Card)
+Title.Size = UDim2.new(1, 0, 0, 28)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "MT AutoLucky vFinal"
+Title.TextColor3 = Color3.new(1,1,1)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 14
+
+local ToggleBtn = Instance.new("TextButton", Card)
+ToggleBtn.Size = UDim2.new(0, 100, 0, 28)
+ToggleBtn.Position = UDim2.new(1, -106, 0, 2)
+ToggleBtn.TextColor3 = Color3.new(1,1,1)
+ToggleBtn.Font = Enum.Font.Gotham
+ToggleBtn.TextSize = 12
+
+local StatusLabel = Instance.new("TextLabel", Card)
+StatusLabel.Size = UDim2.new(1, -12, 0, 20)
+StatusLabel.Position = UDim2.new(0, 6, 0, 30)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "State: Idle"
+StatusLabel.TextColor3 = Color3.new(1,1,1)
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 12
+
+-- per-obby rows
+local RowY = 55
+local ObbyRows = {}
+for i, name in ipairs(ObbyPaths) do
+    local lbl = Instance.new("TextLabel", Card)
+    lbl.Size = UDim2.new(1, -12, 0, 22)
+    lbl.Position = UDim2.new(0, 6, 0, RowY)
+    lbl.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    lbl.BorderSizePixel = 0
+    lbl.Text = ("[%d] %s — %s"):format(i, name, "PENDING")
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextSize = 12
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextColor3 = Color3.new(1,1,1)
+    ObbyRows[name] = lbl
+    RowY = RowY + 26
+end
+
+local LogLabel = Instance.new("TextLabel", Card)
+LogLabel.Size = UDim2.new(1, -12, 0, 26)
+LogLabel.Position = UDim2.new(0, 6, 1, -40)
+LogLabel.BackgroundTransparency = 1
+LogLabel.Text = "Logs: ready"
+LogLabel.TextXAlignment = Enum.TextXAlignment.Left
+LogLabel.Font = Enum.Font.Gotham
+LogLabel.TextSize = 12
+LogLabel.TextColor3 = Color3.fromRGB(200,200,200)
+
+local function uiLog(s)
+    if not s then s = "" end
+    pcall(function() LogLabel.Text = ("Logs: %s"):format(tostring(s)) end)
+end
+
+local function setObbyStatus(name, status, extra)
+    local lbl = ObbyRows[name]
+    if not lbl then return end
+    pcall(function()
+        lbl.Text = ("[%s] %s — %s%s"):format(tostring(table.find(ObbyPaths, name) or "?"), name, status, extra and (" (%s)"):format(tostring(extra)) or "")
+    end)
+end
+
+local function setState(s)
+    pcall(function() StatusLabel.Text = ("State: %s"):format(s) end)
+end
+
+-- ensure default auto-on (user reported not auto starting)
+if _G.MT_AUTO == nil then _G.MT_AUTO = true end
+local Toggled = (_G.MT_AUTO == true)
+
+local function updateToggleUI()
+    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
+    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(40,160,40) or Color3.fromRGB(180,50,50)
+end
+updateToggleUI()
+
+-- snapshot helpers (for value changes detection)
 local function snapshotPlayerNumbers(player)
     local snap = {}
     local function scan(obj)
@@ -12,18 +148,15 @@ local function snapshotPlayerNumbers(player)
             scan(v)
         end
     end
-    -- leaderstats thường ở player root
     if player then
         local leader = player:FindFirstChild("leaderstats")
         if leader then scan(leader) end
-        -- scan player itself for any Number/Int values
         scan(player)
     end
     return snap
 end
 
 local function compareSnapshots(before, after)
-    -- return true, {name=diff,...} if any numeric increased
     local diffs = {}
     for v, old in pairs(before) do
         local ok, curr = pcall(function() return v.Value end)
@@ -34,79 +167,81 @@ local function compareSnapshots(before, after)
     return #diffs > 0, diffs
 end
 
--- Attempt collect target: combines Touched + Value-change + position heuristics
+-- robust attemptCollectTarget: Touched, numeric increase, moved-away heuristics
 local function attemptCollectTarget(target)
     if not target or not target.Parent then return false, "no_target" end
     local char = lp.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false, "no_hrp" end
 
-    -- pre-snapshot numeric values
     local beforeSnap = snapshotPlayerNumbers(lp)
-
     local touchedByPlayer = false
     local conn
-    if target and target:IsA("BasePart") then
-        conn = target.Touched:Connect(function(hit)
+
+    local primaryPart = nil
+    if target:IsA("BasePart") then
+        primaryPart = target
+    elseif target:IsA("Model") and target.PrimaryPart and target.PrimaryPart:IsA("BasePart") then
+        primaryPart = target.PrimaryPart
+    else
+        -- try to find a part child
+        for _, c in ipairs(target:GetDescendants()) do
+            if c:IsA("BasePart") then primaryPart = c; break end
+        end
+    end
+
+    if primaryPart then
+        conn = primaryPart.Touched:Connect(function(hit)
             if not hit then return end
             if not lp.Character then return end
             if hit:IsDescendantOf(lp.Character) then
                 touchedByPlayer = true
             end
         end)
-    else
-        -- if target is not a BasePart, try to find a primary part inside it
-        local primary = target:IsA("Model") and target.PrimaryPart or nil
-        if primary and primary:IsA("BasePart") then
-            conn = primary.Touched:Connect(function(hit)
-                if not hit then return end
-                if hit:IsDescendantOf(lp.Character) then
-                    touchedByPlayer = true
-                end
-            end)
-        end
     end
 
     local startTime = os.clock()
     local attempts = 0
     local succeeded = false
-    local detectionMethod = nil
-    local detectionInfo = ""
+    local detectionMethod, detectionInfo = nil, nil
 
     while attempts < MAX_ATTEMPTS_PER_TARGET and (os.clock() - startTime) < MAX_SECONDS_PER_TARGET do
         if not lp.Character then break end
         char = lp.Character
         hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then break end
+        if not target or not target.Parent or not target:IsDescendantOf(workspace) then
+            succeeded = true
+            detectionMethod = "target_removed"
+            detectionInfo = "removed"
+            break
+        end
 
-        -- Quick check: immediate success if player already far from target (maybe teleported instantly)
-        if (hrp.Position - target.Position).Magnitude > 15 then
+        -- if player moved away from target zone (finish zone), treat as success
+        if (hrp.Position - target.Position).Magnitude > 16 then
             succeeded = true
             detectionMethod = "moved_away"
             detectionInfo = ("dist=%.1f"):format((hrp.Position - target.Position).Magnitude)
             break
         end
 
-        -- Move close and firetouchinterest
-        pcall(function()
-            hrp.CFrame = target.CFrame + Vector3.new(0, 1.2, 0)
-        end)
+        -- move and fire touch
+        pcall(function() hrp.CFrame = target.CFrame + Vector3.new(0, 1.2, 0) end)
         task.wait(math.max(0.12, MOVE_INTERVAL * 0.5))
 
         pcall(function()
-            firetouchinterest(hrp, target, 0)
+            firetouchinterest(hrp, primaryPart or target, 0)
             task.wait(0.035)
-            firetouchinterest(hrp, target, 1)
+            firetouchinterest(hrp, primaryPart or target, 1)
         end)
 
         attempts = attempts + 1
 
-        -- Wait short while and check detection signals
         local checkDeadline = os.clock() + AFTER_TOUCH_SETTLE
         while os.clock() < checkDeadline do
-            -- 1) if touched event fired locally
+            -- 1) local touched event fired
             if touchedByPlayer then
-                -- double-check maybe server registers reward later -> also check numeric after short wait
+                -- check for numeric increase shortly after
                 task.wait(0.12)
                 local afterSnap = snapshotPlayerNumbers(lp)
                 local changed, diffs = compareSnapshots(beforeSnap, afterSnap)
@@ -116,7 +251,6 @@ local function attemptCollectTarget(target)
                     detectionInfo = ("value_increase_count=%d"):format(#diffs)
                     break
                 else
-                    -- even if no value change, accept Touched as success for pure obby that doesn't reward value
                     succeeded = true
                     detectionMethod = "touched_local"
                     detectionInfo = ("attempts=%d"):format(attempts)
@@ -124,7 +258,7 @@ local function attemptCollectTarget(target)
                 end
             end
 
-            -- 2) check numeric increase regardless of touched
+            -- 2) numeric increased without touch
             local afterSnap2 = snapshotPlayerNumbers(lp)
             local changed2, diffs2 = compareSnapshots(beforeSnap, afterSnap2)
             if changed2 then
@@ -134,7 +268,7 @@ local function attemptCollectTarget(target)
                 break
             end
 
-            -- 3) check if target was moved/disabled by server (some obbies change property)
+            -- 3) target removed (some obby implementations remove parts after touch)
             if not target.Parent or not target:IsDescendantOf(workspace) then
                 succeeded = true
                 detectionMethod = "target_removed"
@@ -146,12 +280,9 @@ local function attemptCollectTarget(target)
         end
 
         if succeeded then break end
-
-        -- small pause before next attempt
         task.wait(0.12)
     end
 
-    -- cleanup connection
     if conn and conn.Connected then
         pcall(function() conn:Disconnect() end)
     end
@@ -159,7 +290,7 @@ local function attemptCollectTarget(target)
     if succeeded then
         return true, ("%s %s"):format(tostring(detectionMethod or "unknown"), tostring(detectionInfo or ""))
     else
-        -- final fallback: re-scan numeric values once more before giving up
+        -- last-chance numeric snapshot
         local afterFinal = snapshotPlayerNumbers(lp)
         local changedFinal, diffsFinal = compareSnapshots(beforeSnap, afterFinal)
         if changedFinal then
@@ -169,4 +300,128 @@ local function attemptCollectTarget(target)
     end
 end
 
--- (Phần còn lại của script vNext giữ nguyên — UI, loop, ServerHopImmediate, v.v.)
+-- Server hop immediate (queue then search)
+local function ServerHopImmediate()
+    pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
+    setState("ServerHop: fetching servers")
+    uiLog("ServerHop: looking for servers")
+    while true do
+        local ok, response = pcall(function()
+            local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d"):format(game.PlaceId, SERVER_LIST_LIMIT)
+            return HttpService:JSONDecode(game:HttpGet(url))
+        end)
+        if ok and response and type(response.data) == "table" then
+            for _, s in ipairs(response.data) do
+                if s.id ~= game.JobId and type(s.playing) == "number" and type(s.maxPlayers) == "number" then
+                    if s.playing < s.maxPlayers then
+                        uiLog("Teleporting to server "..tostring(s.id))
+                        pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id) end)
+                        task.wait(1)
+                    end
+                end
+            end
+        else
+            uiLog("Server fetch failed")
+        end
+        task.wait(1.5)
+    end
+end
+
+-- main auto loop
+local autoThread = nil
+local stopRequested = false
+
+local function startAuto()
+    if autoThread then return end
+    stopRequested = false
+    autoThread = task.spawn(function()
+        setState("Running")
+        uiLog("Auto started")
+        while not stopRequested do
+            local shared = workspace:FindFirstChild("MoneyMap_SharedInstances")
+            if not shared then
+                uiLog("SharedInstances missing, retry")
+                setState("Waiting for Shared")
+                task.wait(2)
+            else
+                local allDone = true
+                for _, name in ipairs(ObbyPaths) do
+                    if stopRequested then break end
+                    setObbyStatus(name, "CHECKING")
+                    local target = shared:FindFirstChild(name)
+                    if not target then
+                        setObbyStatus(name, "MISSING")
+                        uiLog(("Obby %s missing"):format(name))
+                        task.wait(0.25)
+                        allDone = false
+                    else
+                        setObbyStatus(name, "IN-PROGRESS")
+                        uiLog(("Collecting %s"):format(name))
+                        local ok, info = attemptCollectTarget(target)
+                        if ok then
+                            setObbyStatus(name, "DONE", info)
+                            uiLog(("Collected %s %s"):format(name, tostring(info)))
+                            task.wait(0.25)
+                        else
+                            setObbyStatus(name, "FAILED", info)
+                            uiLog(("Failed %s -> immediate ServerHop"):format(name))
+                            _G.MT_AUTO = true
+                            pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
+                            ServerHopImmediate()
+                            allDone = false
+                            break
+                        end
+                    end
+                end
+
+                if allDone then
+                    uiLog("All obbies done -> ServerHop")
+                    _G.MT_AUTO = true
+                    pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
+                    ServerHopImmediate()
+                end
+            end
+            task.wait(1)
+        end
+        setState("Stopped")
+        autoThread = nil
+    end)
+end
+
+local function stopAuto()
+    stopRequested = true
+    _G.MT_AUTO = false
+    setState("Stopping")
+    uiLog("Stop requested")
+end
+
+-- Toggle button behavior
+ToggleBtn.MouseButton1Click:Connect(function()
+    Toggled = not Toggled
+    _G.MT_AUTO = Toggled
+    updateToggleUI()
+    if Toggled then startAuto() else stopAuto() end
+end)
+
+-- auto-start if flagged (ensures startAuto actually runs)
+if Toggled then
+    task.spawn(function()
+        task.wait(0.25)
+        startAuto()
+    end)
+end
+
+-- restart loop after respawn
+lp.CharacterAdded:Connect(function()
+    task.wait(1)
+    if _G.MT_AUTO and not autoThread then
+        startAuto()
+    end
+end)
+
+-- Expose control for debug
+getgenv().MT_AutoLucky_vFinal = {
+    IsRunning = function() return _G.MT_AUTO end,
+    Start = function() _G.MT_AUTO = true; startAuto() end,
+    Stop = function() _G.MT_AUTO = false; stopAuto() end,
+}
