@@ -1,17 +1,22 @@
--- MT AutoLucky vFinal: UI reliably appears + auto-start fixed + robust loop
--- Paste vào executor thay file cũ
+-- MT AutoLucky: Movement + Return + Noclip update
+-- Paste into executor replacing previous version
 
--- Anti-dupe + debug check
+-- Anti-dupe + debug guard
 if getgenv().MT_LOADED and not getgenv().MT_DEBUG then return end
 pcall(function() getgenv().MT_LOADED = true end)
 
 -- CONFIG
 local EXISTING_NAME = "MT_AutoLuckyGui_vFinal"
 local AUTOLUCKY_URL = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
-local ObbyPaths = {"MoneyObby3End","MoneyObby2End","MoneyObby1End"} -- order matters
+local ObbyPaths = {
+    "MoneyObby3End",
+    "MoneyObby2End",
+    "MoneyObby1End"
+}
 local MAX_ATTEMPTS_PER_TARGET = 8
 local MAX_SECONDS_PER_TARGET = 12
-local MOVE_INTERVAL = 0.45
+local MOVE_STEP_WAIT = 0.06
+local MOVE_REPEATS = 8
 local AFTER_TOUCH_SETTLE = 0.45
 local SERVER_LIST_LIMIT = 100
 
@@ -19,125 +24,146 @@ local SERVER_LIST_LIMIT = 100
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local lp = Players.LocalPlayer
 
 -- helpers
 local function missing(t, f, fallback) if type(f) == t then return f end return fallback end
 local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
 
--- ensure game loaded
+-- wait
 if not game:IsLoaded() then game.Loaded:Wait() end
 
--- clean old GUI safely
-local old = game.CoreGui:FindFirstChild(EXISTING_NAME)
-if old then
-    if not getgenv().MT_DEBUG then
-        pcall(function() old:Destroy() end)
-    end
-end
-
--- UI creation (try CoreGui first, fallback to PlayerGui)
+-- UI parent (try CoreGui fallback PlayerGui)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = EXISTING_NAME
 ScreenGui.ResetOnSpawn = false
+local okParent = pcall(function() ScreenGui.Parent = game.CoreGui end)
+if not okParent then pcall(function() ScreenGui.Parent = lp:WaitForChild("PlayerGui") end) end
 
-local successParent = pcall(function() ScreenGui.Parent = game.CoreGui end)
-if not successParent then
-    -- fallback to PlayerGui (some executors need this)
-    pcall(function() ScreenGui.Parent = lp:WaitForChild("PlayerGui") end)
-end
-
--- build card
+-- minimal UI (reuse vFinal look)
 local Card = Instance.new("Frame", ScreenGui)
-Card.Size = UDim2.new(0, 280, 0, 220)
-Card.Position = UDim2.new(0.5, -140, 0.08, 0)
+Card.Size = UDim2.new(0, 300, 0, 220)
+Card.Position = UDim2.new(0.5, -150, 0.08, 0)
 Card.BackgroundColor3 = Color3.fromRGB(30,30,30)
-Card.BorderSizePixel = 0
-Card.Active = true
-Card.Draggable = true
+Card.Active = true; Card.Draggable = true
 
 local Title = Instance.new("TextLabel", Card)
-Title.Size = UDim2.new(1, 0, 0, 28)
-Title.Position = UDim2.new(0, 0, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "MT AutoLucky vFinal"
-Title.TextColor3 = Color3.new(1,1,1)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 14
+Title.Size = UDim2.new(1,0,0,28); Title.Position = UDim2.new(0,0,0,0)
+Title.BackgroundTransparency = 1; Title.Text = "MT AutoLucky - Move+Noclip"
+Title.TextColor3 = Color3.new(1,1,1); Title.Font = Enum.Font.GothamBold; Title.TextSize = 14
 
 local ToggleBtn = Instance.new("TextButton", Card)
-ToggleBtn.Size = UDim2.new(0, 100, 0, 28)
-ToggleBtn.Position = UDim2.new(1, -106, 0, 2)
-ToggleBtn.TextColor3 = Color3.new(1,1,1)
-ToggleBtn.Font = Enum.Font.Gotham
-ToggleBtn.TextSize = 12
+ToggleBtn.Size = UDim2.new(0, 100, 0, 28); ToggleBtn.Position = UDim2.new(1,-106,0,2)
+ToggleBtn.TextColor3 = Color3.new(1,1,1); ToggleBtn.Font = Enum.Font.Gotham; ToggleBtn.TextSize = 12
 
 local StatusLabel = Instance.new("TextLabel", Card)
-StatusLabel.Size = UDim2.new(1, -12, 0, 20)
-StatusLabel.Position = UDim2.new(0, 6, 0, 30)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "State: Idle"
-StatusLabel.TextColor3 = Color3.new(1,1,1)
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.Font = Enum.Font.Gotham
-StatusLabel.TextSize = 12
+StatusLabel.Size = UDim2.new(1,-12,0,20); StatusLabel.Position = UDim2.new(0,6,0,30)
+StatusLabel.BackgroundTransparency = 1; StatusLabel.Text = "State: Idle"; StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 
--- per-obby rows
+-- per obby rows
 local RowY = 55
 local ObbyRows = {}
 for i, name in ipairs(ObbyPaths) do
     local lbl = Instance.new("TextLabel", Card)
-    lbl.Size = UDim2.new(1, -12, 0, 22)
-    lbl.Position = UDim2.new(0, 6, 0, RowY)
-    lbl.BackgroundColor3 = Color3.fromRGB(40,40,40)
-    lbl.BorderSizePixel = 0
-    lbl.Text = ("[%d] %s — %s"):format(i, name, "PENDING")
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.TextSize = 12
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextColor3 = Color3.new(1,1,1)
+    lbl.Size = UDim2.new(1,-12,0,22); lbl.Position = UDim2.new(0,6,0,RowY)
+    lbl.BackgroundColor3 = Color3.fromRGB(40,40,40); lbl.BorderSizePixel = 0
+    lbl.Text = ("[%d] %s — %s"):format(i, name, "PENDING"); lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextSize = 12; lbl.Font = Enum.Font.Gotham; lbl.TextColor3 = Color3.new(1,1,1)
     ObbyRows[name] = lbl
     RowY = RowY + 26
 end
 
 local LogLabel = Instance.new("TextLabel", Card)
-LogLabel.Size = UDim2.new(1, -12, 0, 26)
-LogLabel.Position = UDim2.new(0, 6, 1, -40)
-LogLabel.BackgroundTransparency = 1
-LogLabel.Text = "Logs: ready"
-LogLabel.TextXAlignment = Enum.TextXAlignment.Left
-LogLabel.Font = Enum.Font.Gotham
-LogLabel.TextSize = 12
-LogLabel.TextColor3 = Color3.fromRGB(200,200,200)
+LogLabel.Size = UDim2.new(1,-12,0,26); LogLabel.Position = UDim2.new(0,6,1,-40)
+LogLabel.BackgroundTransparency = 1; LogLabel.Text = "Logs: ready"; LogLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-local function uiLog(s)
-    if not s then s = "" end
-    pcall(function() LogLabel.Text = ("Logs: %s"):format(tostring(s)) end)
+local function uiLog(s) pcall(function() LogLabel.Text = "Logs: "..tostring(s) end) end
+local function setObbyStatus(name, status, extra)
+    local lbl = ObbyRows[name]; if not lbl then return end
+    pcall(function() lbl.Text = ("[%s] %s — %s%s"):format(tostring(table.find(ObbyPaths, name) or "?"), name, status, extra and (" ("..tostring(extra)..")") or "") end)
+end
+local function setState(s) pcall(function() StatusLabel.Text = "State: "..tostring(s) end) end
+
+-- ensure default auto on
+if _G.MT_AUTO == nil then _G.MT_AUTO = true end
+local Toggled = (_G.MT_AUTO == true)
+local function updateToggleUI() ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"; ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(40,160,40) or Color3.fromRGB(180,50,50) end
+updateToggleUI()
+
+-- store original CFrames for the three obby parts (if exist)
+local function fetchTargets()
+    local shared = workspace:FindFirstChild("MoneyMap_SharedInstances")
+    if not shared then return nil end
+    local tbl = {}
+    for _, name in ipairs(ObbyPaths) do
+        local t = shared:FindFirstChild(name)
+        if t then
+            -- pick a primary part for model/part
+            local prim = nil
+            if t:IsA("BasePart") then prim = t end
+            if t:IsA("Model") and t.PrimaryPart and t.PrimaryPart:IsA("BasePart") then prim = t.PrimaryPart end
+            if not prim then
+                for _,d in ipairs(t:GetDescendants()) do
+                    if d:IsA("BasePart") then prim = d; break end
+                end
+            end
+            if prim then
+                tbl[name] = {root = t, part = prim, origCFrame = prim.CFrame}
+            else
+                tbl[name] = {root = t, part = nil, origCFrame = nil}
+            end
+        else
+            tbl[name] = nil
+        end
+    end
+    return tbl
 end
 
-local function setObbyStatus(name, status, extra)
-    local lbl = ObbyRows[name]
-    if not lbl then return end
-    pcall(function()
-        lbl.Text = ("[%s] %s — %s%s"):format(tostring(table.find(ObbyPaths, name) or "?"), name, status, extra and (" (%s)"):format(tostring(extra)) or "")
+-- Noclip: set CanCollide = false each stepped for character parts
+local noclipConn
+local function enableNoclipForCharacter(char)
+    if noclipConn then noclipConn:Disconnect() end
+    noclipConn = RunService.Stepped:Connect(function()
+        if not char or not char.Parent then return end
+        for _, c in ipairs(char:GetDescendants()) do
+            if c:IsA("BasePart") then
+                pcall(function() c.CanCollide = false end)
+            end
+        end
     end)
 end
 
-local function setState(s)
-    pcall(function() StatusLabel.Text = ("State: %s"):format(s) end)
+-- disconnect noclip on cleanup
+local function disableNoclip()
+    if noclipConn then
+        pcall(function() noclipConn:Disconnect() end)
+        noclipConn = nil
+    end
 end
 
--- ensure default auto-on (user reported not auto starting)
-if _G.MT_AUTO == nil then _G.MT_AUTO = true end
-local Toggled = (_G.MT_AUTO == true)
-
-local function updateToggleUI()
-    ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"
-    ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(40,160,40) or Color3.fromRGB(180,50,50)
+-- safe move: tween HRP to target CFrame (offseted) then small repeated set to be aggressive
+local function safeMoveToHRP(hrp, targetCFrame)
+    if not hrp or not targetCFrame then return false end
+    -- try tween
+    pcall(function()
+        local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Linear)
+        local goal = {CFrame = targetCFrame}
+        local tw = TweenService:Create(hrp, tweenInfo, goal)
+        tw:Play()
+        tw:Cancel() -- make sure we still manually set below to be aggressive
+    end)
+    -- aggressive repeated CFrame sets
+    for i = 1, MOVE_REPEATS do
+        if not hrp.Parent then return false end
+        pcall(function() hrp.CFrame = targetCFrame end)
+        task.wait(MOVE_STEP_WAIT)
+    end
+    return true
 end
-updateToggleUI()
 
--- snapshot helpers (for value changes detection)
+-- snapshot helpers (leaderstats / numbervalues)
 local function snapshotPlayerNumbers(player)
     local snap = {}
     local function scan(obj)
@@ -155,7 +181,6 @@ local function snapshotPlayerNumbers(player)
     end
     return snap
 end
-
 local function compareSnapshots(before, after)
     local diffs = {}
     for v, old in pairs(before) do
@@ -167,112 +192,98 @@ local function compareSnapshots(before, after)
     return #diffs > 0, diffs
 end
 
--- robust attemptCollectTarget: Touched, numeric increase, moved-away heuristics
-local function attemptCollectTarget(target)
-    if not target or not target.Parent then return false, "no_target" end
+-- attempt collect target with strict detection (Touched after move OR number increase)
+local function attemptCollectTargetSequence(data)
+    -- data: {root, part, origCFrame}
+    if not data or not data.part then return false, "no_part" end
+    local targetPart = data.part
     local char = lp.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false, "no_hrp" end
 
+    -- pre-snapshot numeric
     local beforeSnap = snapshotPlayerNumbers(lp)
-    local touchedByPlayer = false
+
+    -- touched guard: only accept touches that happen after we moved into position
+    local touchedAt = 0
     local conn
-
-    local primaryPart = nil
-    if target:IsA("BasePart") then
-        primaryPart = target
-    elseif target:IsA("Model") and target.PrimaryPart and target.PrimaryPart:IsA("BasePart") then
-        primaryPart = target.PrimaryPart
-    else
-        -- try to find a part child
-        for _, c in ipairs(target:GetDescendants()) do
-            if c:IsA("BasePart") then primaryPart = c; break end
+    conn = targetPart.Touched:Connect(function(hit)
+        if not hit or not lp.Character then return end
+        if hit:IsDescendantOf(lp.Character) then
+            touchedAt = tick()
         end
-    end
+    end)
 
-    if primaryPart then
-        conn = primaryPart.Touched:Connect(function(hit)
-            if not hit then return end
-            if not lp.Character then return end
-            if hit:IsDescendantOf(lp.Character) then
-                touchedByPlayer = true
-            end
-        end)
-    end
-
-    local startTime = os.clock()
+    local startTime = tick()
     local attempts = 0
     local succeeded = false
-    local detectionMethod, detectionInfo = nil, nil
+    local detectInfo = nil
 
-    while attempts < MAX_ATTEMPTS_PER_TARGET and (os.clock() - startTime) < MAX_SECONDS_PER_TARGET do
-        if not lp.Character then break end
-        char = lp.Character
-        hrp = char and char:FindFirstChild("HumanoidRootPart")
+    -- Sequence: 1) move to near player (reset) 2) move to target 3) attempt touch loop 4) move back to original
+    -- get safe player position (slightly behind current HRP to avoid overlapping)
+    local playerPos = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") and lp.Character.HumanoidRootPart.CFrame or nil
+    if playerPos then
+        -- offset behind: negative Z
+        local nearPlayerCF = playerPos * CFrame.new(0, 0, 1.6) -- slightly behind
+        safeMoveToHRP(hrp, nearPlayerCF)
+        task.wait(0.12)
+    end
+
+    -- move to target approach point (a little above target)
+    local approachCF = targetPart.CFrame + Vector3.new(0, 1.2, 0)
+    safeMoveToHRP(hrp, approachCF)
+    task.wait(0.06)
+
+    -- record the time at which we started attempts; only touches after this count
+    local moveTime = tick()
+
+    while attempts < MAX_ATTEMPTS_PER_TARGET and (tick() - startTime) < MAX_SECONDS_PER_TARGET do
+        if not lp or not lp.Character then break end
+        hrp = lp.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then break end
-        if not target or not target.Parent or not target:IsDescendantOf(workspace) then
-            succeeded = true
-            detectionMethod = "target_removed"
-            detectionInfo = "removed"
-            break
+
+        -- ensure we're still close to approachCF; if not, reapply
+        if (hrp.Position - approachCF.Position).Magnitude > 3.5 then
+            safeMoveToHRP(hrp, approachCF)
+            task.wait(0.06)
         end
 
-        -- if player moved away from target zone (finish zone), treat as success
-        if (hrp.Position - target.Position).Magnitude > 16 then
-            succeeded = true
-            detectionMethod = "moved_away"
-            detectionInfo = ("dist=%.1f"):format((hrp.Position - target.Position).Magnitude)
-            break
-        end
-
-        -- move and fire touch
-        pcall(function() hrp.CFrame = target.CFrame + Vector3.new(0, 1.2, 0) end)
-        task.wait(math.max(0.12, MOVE_INTERVAL * 0.5))
-
+        -- fire touch aggressively
         pcall(function()
-            firetouchinterest(hrp, primaryPart or target, 0)
-            task.wait(0.035)
-            firetouchinterest(hrp, primaryPart or target, 1)
+            firetouchinterest(hrp, targetPart, 0)
+            task.wait(0.04)
+            firetouchinterest(hrp, targetPart, 1)
         end)
 
         attempts = attempts + 1
 
-        local checkDeadline = os.clock() + AFTER_TOUCH_SETTLE
-        while os.clock() < checkDeadline do
-            -- 1) local touched event fired
-            if touchedByPlayer then
-                -- check for numeric increase shortly after
+        -- wait short and check detection
+        local deadline = tick() + AFTER_TOUCH_SETTLE
+        while tick() < deadline do
+            -- 1) touched after we moved to target
+            if touchedAt >= moveTime then
+                -- check numeric increase shortly
                 task.wait(0.12)
                 local afterSnap = snapshotPlayerNumbers(lp)
                 local changed, diffs = compareSnapshots(beforeSnap, afterSnap)
                 if changed then
                     succeeded = true
-                    detectionMethod = "touched+value_increase"
-                    detectionInfo = ("value_increase_count=%d"):format(#diffs)
+                    detectInfo = ("touched+value_increase count=%d"):format(#diffs)
                     break
                 else
+                    -- accept local touch as success only if it happened after moveTime and we actually attempted at least once
                     succeeded = true
-                    detectionMethod = "touched_local"
-                    detectionInfo = ("attempts=%d"):format(attempts)
+                    detectInfo = ("touched_local attempts=%d"):format(attempts)
                     break
                 end
             end
 
-            -- 2) numeric increased without touch
+            -- 2) direct numeric increase without touch
             local afterSnap2 = snapshotPlayerNumbers(lp)
             local changed2, diffs2 = compareSnapshots(beforeSnap, afterSnap2)
             if changed2 then
                 succeeded = true
-                detectionMethod = "value_increase"
-                detectionInfo = ("value_increase_count=%d"):format(#diffs2)
-                break
-            end
-
-            -- 3) target removed (some obby implementations remove parts after touch)
-            if not target.Parent or not target:IsDescendantOf(workspace) then
-                succeeded = true
-                detectionMethod = "target_removed"
-                detectionInfo = "removed"
+                detectInfo = ("value_increase count=%d"):format(#diffs2)
                 break
             end
 
@@ -280,31 +291,36 @@ local function attemptCollectTarget(target)
         end
 
         if succeeded then break end
+        task.wait(0.06)
+    end
+
+    -- move back to original obby position (if known) to try to re-trigger server-side mechanics
+    if data.origCFrame then
+        pcall(function() safeMoveToHRP(hrp, data.origCFrame + Vector3.new(0,1.2,0)) end)
         task.wait(0.12)
     end
 
-    if conn and conn.Connected then
-        pcall(function() conn:Disconnect() end)
-    end
+    -- cleanup
+    if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
 
     if succeeded then
-        return true, ("%s %s"):format(tostring(detectionMethod or "unknown"), tostring(detectionInfo or ""))
+        return true, detectInfo or "success"
     else
-        -- last-chance numeric snapshot
+        -- final numeric re-check
         local afterFinal = snapshotPlayerNumbers(lp)
         local changedFinal, diffsFinal = compareSnapshots(beforeSnap, afterFinal)
         if changedFinal then
             return true, ("value_increase_final=%d"):format(#diffsFinal)
         end
-        return false, ("failed attempts=%d elapsed=%.1fs"):format(attempts, os.clock() - startTime)
+        return false, ("failed attempts=%d elapsed=%.1fs"):format(attempts, tick() - startTime)
     end
 end
 
--- Server hop immediate (queue then search)
+-- ServerHopImmediate (queue then fetch)
 local function ServerHopImmediate()
     pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
-    setState("ServerHop: fetching servers")
-    uiLog("ServerHop: looking for servers")
+    setState("ServerHop")
+    uiLog("ServerHop: searching servers")
     while true do
         local ok, response = pcall(function()
             local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d"):format(game.PlaceId, SERVER_LIST_LIMIT)
@@ -314,7 +330,7 @@ local function ServerHopImmediate()
             for _, s in ipairs(response.data) do
                 if s.id ~= game.JobId and type(s.playing) == "number" and type(s.maxPlayers) == "number" then
                     if s.playing < s.maxPlayers then
-                        uiLog("Teleporting to server "..tostring(s.id))
+                        uiLog("Teleporting -> "..tostring(s.id))
                         pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id) end)
                         task.wait(1)
                     end
@@ -327,8 +343,8 @@ local function ServerHopImmediate()
     end
 end
 
--- main auto loop
-local autoThread = nil
+-- main loop: iterate through ObbyPaths, use recorded origCFrame, enable noclip and ensure moves happen
+local autoThread
 local stopRequested = false
 
 local function startAuto()
@@ -337,30 +353,35 @@ local function startAuto()
     autoThread = task.spawn(function()
         setState("Running")
         uiLog("Auto started")
+        -- fetch targets table once per cycle
         while not stopRequested do
-            local shared = workspace:FindFirstChild("MoneyMap_SharedInstances")
-            if not shared then
-                uiLog("SharedInstances missing, retry")
+            local targets = fetchTargets()
+            if not targets then
+                uiLog("SharedInstances missing")
                 setState("Waiting for Shared")
                 task.wait(2)
             else
+                -- ensure character noclip active
+                if lp.Character then enableNoclipForCharacter(lp.Character) end
                 local allDone = true
                 for _, name in ipairs(ObbyPaths) do
                     if stopRequested then break end
-                    setObbyStatus(name, "CHECKING")
-                    local target = shared:FindFirstChild(name)
-                    if not target then
+                    local data = targets[name]
+                    if not data or not data.part then
                         setObbyStatus(name, "MISSING")
-                        uiLog(("Obby %s missing"):format(name))
-                        task.wait(0.25)
+                        uiLog("Missing "..tostring(name))
                         allDone = false
+                        task.wait(0.2)
                     else
                         setObbyStatus(name, "IN-PROGRESS")
-                        uiLog(("Collecting %s"):format(name))
-                        local ok, info = attemptCollectTarget(target)
+                        uiLog("Collecting "..name)
+                        -- move sequence + attempts
+                        -- ensure char exists and noclip
+                        if lp.Character then enableNoclipForCharacter(lp.Character) end
+                        local ok, info = attemptCollectTargetSequence(data)
                         if ok then
                             setObbyStatus(name, "DONE", info)
-                            uiLog(("Collected %s %s"):format(name, tostring(info)))
+                            uiLog(("Collected %s -> %s"):format(name, tostring(info)))
                             task.wait(0.25)
                         else
                             setObbyStatus(name, "FAILED", info)
@@ -381,8 +402,9 @@ local function startAuto()
                     ServerHopImmediate()
                 end
             end
-            task.wait(1)
+            task.wait(0.8)
         end
+        disableNoclip()
         setState("Stopped")
         autoThread = nil
     end)
@@ -393,9 +415,10 @@ local function stopAuto()
     _G.MT_AUTO = false
     setState("Stopping")
     uiLog("Stop requested")
+    disableNoclip()
 end
 
--- Toggle button behavior
+-- Toggle UI hook
 ToggleBtn.MouseButton1Click:Connect(function()
     Toggled = not Toggled
     _G.MT_AUTO = Toggled
@@ -403,23 +426,21 @@ ToggleBtn.MouseButton1Click:Connect(function()
     if Toggled then startAuto() else stopAuto() end
 end)
 
--- auto-start if flagged (ensures startAuto actually runs)
+-- auto-start
 if Toggled then
-    task.spawn(function()
-        task.wait(0.25)
-        startAuto()
-    end)
+    task.spawn(function() task.wait(0.25); startAuto() end)
 end
 
--- restart loop after respawn
-lp.CharacterAdded:Connect(function()
-    task.wait(1)
-    if _G.MT_AUTO and not autoThread then
-        startAuto()
+-- ensure noclip on character spawn
+lp.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    if _G.MT_AUTO then
+        enableNoclipForCharacter(char)
+        if not autoThread then startAuto() end
     end
 end)
 
--- Expose control for debug
+-- debug control
 getgenv().MT_AutoLucky_vFinal = {
     IsRunning = function() return _G.MT_AUTO end,
     Start = function() _G.MT_AUTO = true; startAuto() end,
