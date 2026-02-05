@@ -1,289 +1,147 @@
--- MT AutoLucky: Movement + Return + Noclip update
--- Paste into executor replacing previous version
+-- attemptCollectTargetSequence (Chỉ snapshot từ Backpack)
+-- Yêu cầu: các helper snapshotPlayerNumbers, compareInventorySnapshots, detectPreferredNumberIncrease,
+-- safeMoveToHRP, enableNoclipForCharacter tồn tại trong script hiện tại.
 
--- Anti-dupe + debug guard
-if getgenv().MT_LOADED and not getgenv().MT_DEBUG then return end
-pcall(function() getgenv().MT_LOADED = true end)
+local function snapshotBackpack(player)
+    local snap = {byName = {}, total = 0}
+    if not player then return snap end
 
--- CONFIG
-local EXISTING_NAME = "MT_AutoLuckyGui_vFinal"
-local AUTOLUCKY_URL = "https://raw.githubusercontent.com/vtrip-ai/BetaTest/refs/heads/main/Autolucky"
-local ObbyPaths = {
-    "MoneyObby3End",
-    "MoneyObby2End",
-    "MoneyObby1End"
-}
-local MAX_ATTEMPTS_PER_TARGET = 8
-local MAX_SECONDS_PER_TARGET = 12
-local MOVE_STEP_WAIT = 0.06
-local MOVE_REPEATS = 8
-local AFTER_TOUCH_SETTLE = 0.45
-local SERVER_LIST_LIMIT = 100
+    local backpack = player:FindFirstChild("Backpack")
+    if not backpack then return snap end
 
--- Services
-local Players = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local lp = Players.LocalPlayer
-
--- helpers
-local function missing(t, f, fallback) if type(f) == t then return f end return fallback end
-local queueteleport = missing("function", (syn and syn.queue_on_teleport) or queue_on_teleport, function() end)
-
--- wait
-if not game:IsLoaded() then game.Loaded:Wait() end
-
--- UI parent (try CoreGui fallback PlayerGui)
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = EXISTING_NAME
-ScreenGui.ResetOnSpawn = false
-local okParent = pcall(function() ScreenGui.Parent = game.CoreGui end)
-if not okParent then pcall(function() ScreenGui.Parent = lp:WaitForChild("PlayerGui") end) end
-
--- minimal UI (reuse vFinal look)
-local Card = Instance.new("Frame", ScreenGui)
-Card.Size = UDim2.new(0, 300, 0, 220)
-Card.Position = UDim2.new(0.5, -150, 0.08, 0)
-Card.BackgroundColor3 = Color3.fromRGB(30,30,30)
-Card.Active = true; Card.Draggable = true
-
-local Title = Instance.new("TextLabel", Card)
-Title.Size = UDim2.new(1,0,0,28); Title.Position = UDim2.new(0,0,0,0)
-Title.BackgroundTransparency = 1; Title.Text = "MT AutoLucky - Move+Noclip"
-Title.TextColor3 = Color3.new(1,1,1); Title.Font = Enum.Font.GothamBold; Title.TextSize = 14
-
-local ToggleBtn = Instance.new("TextButton", Card)
-ToggleBtn.Size = UDim2.new(0, 100, 0, 28); ToggleBtn.Position = UDim2.new(1,-106,0,2)
-ToggleBtn.TextColor3 = Color3.new(1,1,1); ToggleBtn.Font = Enum.Font.Gotham; ToggleBtn.TextSize = 12
-
-local StatusLabel = Instance.new("TextLabel", Card)
-StatusLabel.Size = UDim2.new(1,-12,0,20); StatusLabel.Position = UDim2.new(0,6,0,30)
-StatusLabel.BackgroundTransparency = 1; StatusLabel.Text = "State: Idle"; StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-
--- per obby rows
-local RowY = 55
-local ObbyRows = {}
-for i, name in ipairs(ObbyPaths) do
-    local lbl = Instance.new("TextLabel", Card)
-    lbl.Size = UDim2.new(1,-12,0,22); lbl.Position = UDim2.new(0,6,0,RowY)
-    lbl.BackgroundColor3 = Color3.fromRGB(40,40,40); lbl.BorderSizePixel = 0
-    lbl.Text = ("[%d] %s — %s"):format(i, name, "PENDING"); lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.TextSize = 12; lbl.Font = Enum.Font.Gotham; lbl.TextColor3 = Color3.new(1,1,1)
-    ObbyRows[name] = lbl
-    RowY = RowY + 26
-end
-
-local LogLabel = Instance.new("TextLabel", Card)
-LogLabel.Size = UDim2.new(1,-12,0,26); LogLabel.Position = UDim2.new(0,6,1,-40)
-LogLabel.BackgroundTransparency = 1; LogLabel.Text = "Logs: ready"; LogLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local function uiLog(s) pcall(function() LogLabel.Text = "Logs: "..tostring(s) end) end
-local function setObbyStatus(name, status, extra)
-    local lbl = ObbyRows[name]; if not lbl then return end
-    pcall(function() lbl.Text = ("[%s] %s — %s%s"):format(tostring(table.find(ObbyPaths, name) or "?"), name, status, extra and (" ("..tostring(extra)..")") or "") end)
-end
-local function setState(s) pcall(function() StatusLabel.Text = "State: "..tostring(s) end) end
-
--- ensure default auto on
-if _G.MT_AUTO == nil then _G.MT_AUTO = true end
-local Toggled = (_G.MT_AUTO == true)
-local function updateToggleUI() ToggleBtn.Text = Toggled and "AUTO: ON" or "AUTO: OFF"; ToggleBtn.BackgroundColor3 = Toggled and Color3.fromRGB(40,160,40) or Color3.fromRGB(180,50,50) end
-updateToggleUI()
-
--- store original CFrames for the three obby parts (if exist)
-local function fetchTargets()
-    local shared = workspace:FindFirstChild("MoneyMap_SharedInstances")
-    if not shared then return nil end
-    local tbl = {}
-    for _, name in ipairs(ObbyPaths) do
-        local t = shared:FindFirstChild(name)
-        if t then
-            -- pick a primary part for model/part
-            local prim = nil
-            if t:IsA("BasePart") then prim = t end
-            if t:IsA("Model") and t.PrimaryPart and t.PrimaryPart:IsA("BasePart") then prim = t.PrimaryPart end
-            if not prim then
-                for _,d in ipairs(t:GetDescendants()) do
-                    if d:IsA("BasePart") then prim = d; break end
-                end
-            end
-            if prim then
-                tbl[name] = {root = t, part = prim, origCFrame = prim.CFrame}
-            else
-                tbl[name] = {root = t, part = nil, origCFrame = nil}
-            end
-        else
-            tbl[name] = nil
-        end
+    for _, v in ipairs(backpack:GetChildren()) do
+        local name = tostring(v.Name or "<?>")
+        snap.byName[name] = (snap.byName[name] or 0) + 1
+        snap.total = snap.total + 1
     end
-    return tbl
-end
 
--- Noclip: set CanCollide = false each stepped for character parts
-local noclipConn
-local function enableNoclipForCharacter(char)
-    if noclipConn then noclipConn:Disconnect() end
-    noclipConn = RunService.Stepped:Connect(function()
-        if not char or not char.Parent then return end
-        for _, c in ipairs(char:GetDescendants()) do
-            if c:IsA("BasePart") then
-                pcall(function() c.CanCollide = false end)
-            end
-        end
-    end)
-end
-
--- disconnect noclip on cleanup
-local function disableNoclip()
-    if noclipConn then
-        pcall(function() noclipConn:Disconnect() end)
-        noclipConn = nil
-    end
-end
-
--- safe move: tween HRP to target CFrame (offseted) then small repeated set to be aggressive
-local function safeMoveToHRP(hrp, targetCFrame)
-    if not hrp or not targetCFrame then return false end
-    -- try tween
-    pcall(function()
-        local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Linear)
-        local goal = {CFrame = targetCFrame}
-        local tw = TweenService:Create(hrp, tweenInfo, goal)
-        tw:Play()
-        tw:Cancel() -- make sure we still manually set below to be aggressive
-    end)
-    -- aggressive repeated CFrame sets
-    for i = 1, MOVE_REPEATS do
-        if not hrp.Parent then return false end
-        pcall(function() hrp.CFrame = targetCFrame end)
-        task.wait(MOVE_STEP_WAIT)
-    end
-    return true
-end
-
--- snapshot helpers (leaderstats / numbervalues)
-local function snapshotPlayerNumbers(player)
-    local snap = {}
-    local function scan(obj)
-        for _, v in pairs(obj:GetChildren()) do
-            if v:IsA("NumberValue") or v:IsA("IntValue") then
-                snap[v] = v.Value
-            end
-            scan(v)
-        end
-    end
-    if player then
-        local leader = player:FindFirstChild("leaderstats")
-        if leader then scan(leader) end
-        scan(player)
-    end
     return snap
 end
-local function compareSnapshots(before, after)
-    local diffs = {}
-    for v, old in pairs(before) do
-        local ok, curr = pcall(function() return v.Value end)
-        if ok and type(curr) == "number" and curr > old then
-            table.insert(diffs, {obj = v, before = old, after = curr})
-        end
-    end
-    return #diffs > 0, diffs
-end
 
--- attempt collect target with strict detection (Touched after move OR number increase)
-local function attemptCollectTargetSequence(data)
-    -- data: {root, part, origCFrame}
-    if not data or not data.part then return false, "no_part" end
-    local targetPart = data.part
-    local char = lp.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+local function attemptCollectTargetSequence(targetData)
+    -- targetData: {root, part, origCFrame}
+    if not targetData or not targetData.part then return false, "no_part" end
+    local targetPart = targetData.part
+    if not lp or not lp.Character then return false, "no_char" end
+    local hrp = lp.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false, "no_hrp" end
 
-    -- pre-snapshot numeric
-    local beforeSnap = snapshotPlayerNumbers(lp)
+    -- ensure noclip while we move
+    if lp.Character then enableNoclipForCharacter(lp.Character) end
 
-    -- touched guard: only accept touches that happen after we moved into position
+    -- snapshots BEFORE (numbers + backpack only)
+    local beforeNums = snapshotPlayerNumbers(lp)
+    local beforeInv  = snapshotBackpack(lp)
+
+    -- touched guard (accept touches only after we moved there)
     local touchedAt = 0
     local conn
     conn = targetPart.Touched:Connect(function(hit)
-        if not hit or not lp.Character then return end
+        if not hit then return end
+        if not lp.Character then return end
         if hit:IsDescendantOf(lp.Character) then
             touchedAt = tick()
         end
     end)
 
-    local startTime = tick()
+    -- movement sequence
+    local startTick = tick()
     local attempts = 0
     local succeeded = false
-    local detectInfo = nil
+    local detectDetails = nil
 
-    -- Sequence: 1) move to near player (reset) 2) move to target 3) attempt touch loop 4) move back to original
-    -- get safe player position (slightly behind current HRP to avoid overlapping)
-    local playerPos = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") and lp.Character.HumanoidRootPart.CFrame or nil
-    if playerPos then
-        -- offset behind: negative Z
-        local nearPlayerCF = playerPos * CFrame.new(0, 0, 1.6) -- slightly behind
+    -- move near player then to target
+    local playerHRP = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if playerHRP then
+        local nearPlayerCF = playerHRP.CFrame * CFrame.new(0,0,1.6)
         safeMoveToHRP(hrp, nearPlayerCF)
-        task.wait(0.12)
+        task.wait(0.08)
     end
 
-    -- move to target approach point (a little above target)
-    local approachCF = targetPart.CFrame + Vector3.new(0, 1.2, 0)
+    local approachCF = targetPart.CFrame + Vector3.new(0,1.2,0)
     safeMoveToHRP(hrp, approachCF)
     task.wait(0.06)
+    local moveStart = tick()
 
-    -- record the time at which we started attempts; only touches after this count
-    local moveTime = tick()
-
-    while attempts < MAX_ATTEMPTS_PER_TARGET and (tick() - startTime) < MAX_SECONDS_PER_TARGET do
+    while attempts < MAX_ATTEMPTS_PER_TARGET and (tick() - startTick) < MAX_SECONDS_PER_TARGET do
         if not lp or not lp.Character then break end
         hrp = lp.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then break end
 
-        -- ensure we're still close to approachCF; if not, reapply
-        if (hrp.Position - approachCF.Position).Magnitude > 3.5 then
+        if (hrp.Position - approachCF.Position).Magnitude > 3.6 then
             safeMoveToHRP(hrp, approachCF)
             task.wait(0.06)
         end
 
-        -- fire touch aggressively
+        -- aggressive touch
         pcall(function()
             firetouchinterest(hrp, targetPart, 0)
-            task.wait(0.04)
+            task.wait(0.035)
             firetouchinterest(hrp, targetPart, 1)
         end)
 
         attempts = attempts + 1
 
-        -- wait short and check detection
+        -- short detection window
         local deadline = tick() + AFTER_TOUCH_SETTLE
         while tick() < deadline do
-            -- 1) touched after we moved to target
-            if touchedAt >= moveTime then
-                -- check numeric increase shortly
-                task.wait(0.12)
-                local afterSnap = snapshotPlayerNumbers(lp)
-                local changed, diffs = compareSnapshots(beforeSnap, afterSnap)
-                if changed then
+            -- 1) touched after move
+            if touchedAt >= moveStart then
+                -- re-snapshot backpack and numbers
+                local afterNums = snapshotPlayerNumbers(lp)
+                local afterInv  = snapshotBackpack(lp)
+
+                -- numeric check (leaderstats)
+                local numOk, numDetails = detectPreferredNumberIncrease(beforeNums, afterNums)
+                -- backpack only check
+                local invOk, invDiffs, invDelta = compareInventorySnapshots(beforeInv, afterInv)
+
+                if numOk then
                     succeeded = true
-                    detectInfo = ("touched+value_increase count=%d"):format(#diffs)
+                    detectDetails = ("num_inc %s +%s"):format(tostring(numDetails.name or "?"), tostring(numDetails.delta or "?"))
+                    break
+                elseif invOk then
+                    local infoParts = {}
+                    for _, d in ipairs(invDiffs) do
+                        table.insert(infoParts, ("%s +%d"):format(d.name, d.delta))
+                    end
+                    detectDetails = ("backpack_inc total+%d (%s)"):format(invDelta, table.concat(infoParts, ","))
+                    succeeded = true
                     break
                 else
-                    -- accept local touch as success only if it happened after moveTime and we actually attempted at least once
+                    -- accept local touch even if backpack didn't change (some games don't move items into backpack immediately)
                     succeeded = true
-                    detectInfo = ("touched_local attempts=%d"):format(attempts)
+                    detectDetails = ("touched_local attempts=%d"):format(attempts)
                     break
                 end
             end
 
-            -- 2) direct numeric increase without touch
-            local afterSnap2 = snapshotPlayerNumbers(lp)
-            local changed2, diffs2 = compareSnapshots(beforeSnap, afterSnap2)
-            if changed2 then
+            -- 2) numeric increase without touch
+            local afterNums2 = snapshotPlayerNumbers(lp)
+            local numOk2, numDetails2 = detectPreferredNumberIncrease(beforeNums, afterNums2)
+            if numOk2 then
                 succeeded = true
-                detectInfo = ("value_increase count=%d"):format(#diffs2)
+                detectDetails = ("num_inc %s +%s"):format(tostring(numDetails2.name or "?"), tostring(numDetails2.delta or "?"))
+                break
+            end
+
+            -- 3) backpack increase without touch
+            local afterInv2 = snapshotBackpack(lp)
+            local invOk2, invDiffs2, invDelta2 = compareInventorySnapshots(beforeInv, afterInv2)
+            if invOk2 then
+                local infoParts = {}
+                for _, d in ipairs(invDiffs2) do
+                    table.insert(infoParts, ("%s +%d"):format(d.name, d.delta))
+                end
+                detectDetails = ("backpack_inc total+%d (%s)"):format(invDelta2, table.concat(infoParts,","))
+                succeeded = true
+                break
+            end
+
+            -- 4) moved away heuristic
+            if (hrp.Position - targetPart.Position).Magnitude > 16 then
+                succeeded = true
+                detectDetails = ("moved_away dist=%.1f"):format((hrp.Position - targetPart.Position).Magnitude)
                 break
             end
 
@@ -294,155 +152,31 @@ local function attemptCollectTargetSequence(data)
         task.wait(0.06)
     end
 
-    -- move back to original obby position (if known) to try to re-trigger server-side mechanics
-    if data.origCFrame then
-        pcall(function() safeMoveToHRP(hrp, data.origCFrame + Vector3.new(0,1.2,0)) end)
+    -- move back to original obby position if known
+    if targetData.origCFrame then
+        pcall(function() safeMoveToHRP(hrp, targetData.origCFrame + Vector3.new(0,1.2,0)) end)
         task.wait(0.12)
     end
 
     -- cleanup
     if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
 
-    if succeeded then
-        return true, detectInfo or "success"
-    else
-        -- final numeric re-check
-        local afterFinal = snapshotPlayerNumbers(lp)
-        local changedFinal, diffsFinal = compareSnapshots(beforeSnap, afterFinal)
-        if changedFinal then
-            return true, ("value_increase_final=%d"):format(#diffsFinal)
-        end
-        return false, ("failed attempts=%d elapsed=%.1fs"):format(attempts, tick() - startTime)
-    end
-end
-
--- ServerHopImmediate (queue then fetch)
-local function ServerHopImmediate()
-    pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
-    setState("ServerHop")
-    uiLog("ServerHop: searching servers")
-    while true do
-        local ok, response = pcall(function()
-            local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d"):format(game.PlaceId, SERVER_LIST_LIMIT)
-            return HttpService:JSONDecode(game:HttpGet(url))
-        end)
-        if ok and response and type(response.data) == "table" then
-            for _, s in ipairs(response.data) do
-                if s.id ~= game.JobId and type(s.playing) == "number" and type(s.maxPlayers) == "number" then
-                    if s.playing < s.maxPlayers then
-                        uiLog("Teleporting -> "..tostring(s.id))
-                        pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id) end)
-                        task.wait(1)
-                    end
-                end
-            end
+    -- final backpack/number re-check before fail
+    if not succeeded then
+        local afterNumsFinal = snapshotPlayerNumbers(lp)
+        local afterInvFinal  = snapshotBackpack(lp)
+        local numOkF, numDetF = detectPreferredNumberIncrease(beforeNums, afterNumsFinal)
+        local invOkF, invDiffsF, invDeltaF = compareInventorySnapshots(beforeInv, afterInvFinal)
+        if numOkF then
+            return true, ("final_num_inc %s +%s"):format(tostring(numDetF.name or "?"), tostring(numDetF.delta or "?"))
+        elseif invOkF then
+            local infoParts = {}
+            for _, d in ipairs(invDiffsF) do table.insert(infoParts, ("%s +%d"):format(d.name, d.delta)) end
+            return true, ("final_backpack_inc total+%d (%s)"):format(invDeltaF, table.concat(infoParts, ","))
         else
-            uiLog("Server fetch failed")
+            return false, ("failed attempts=%d elapsed=%.1fs"):format(attempts, tick() - startTick)
         end
-        task.wait(1.5)
     end
+
+    return true, tostring(detectDetails or "success")
 end
-
--- main loop: iterate through ObbyPaths, use recorded origCFrame, enable noclip and ensure moves happen
-local autoThread
-local stopRequested = false
-
-local function startAuto()
-    if autoThread then return end
-    stopRequested = false
-    autoThread = task.spawn(function()
-        setState("Running")
-        uiLog("Auto started")
-        -- fetch targets table once per cycle
-        while not stopRequested do
-            local targets = fetchTargets()
-            if not targets then
-                uiLog("SharedInstances missing")
-                setState("Waiting for Shared")
-                task.wait(2)
-            else
-                -- ensure character noclip active
-                if lp.Character then enableNoclipForCharacter(lp.Character) end
-                local allDone = true
-                for _, name in ipairs(ObbyPaths) do
-                    if stopRequested then break end
-                    local data = targets[name]
-                    if not data or not data.part then
-                        setObbyStatus(name, "MISSING")
-                        uiLog("Missing "..tostring(name))
-                        allDone = false
-                        task.wait(0.2)
-                    else
-                        setObbyStatus(name, "IN-PROGRESS")
-                        uiLog("Collecting "..name)
-                        -- move sequence + attempts
-                        -- ensure char exists and noclip
-                        if lp.Character then enableNoclipForCharacter(lp.Character) end
-                        local ok, info = attemptCollectTargetSequence(data)
-                        if ok then
-                            setObbyStatus(name, "DONE", info)
-                            uiLog(("Collected %s -> %s"):format(name, tostring(info)))
-                            task.wait(0.25)
-                        else
-                            setObbyStatus(name, "FAILED", info)
-                            uiLog(("Failed %s -> immediate ServerHop"):format(name))
-                            _G.MT_AUTO = true
-                            pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
-                            ServerHopImmediate()
-                            allDone = false
-                            break
-                        end
-                    end
-                end
-
-                if allDone then
-                    uiLog("All obbies done -> ServerHop")
-                    _G.MT_AUTO = true
-                    pcall(function() queueteleport(("_G.MT_AUTO = true; loadstring(game:HttpGet('%s'))()"):format(AUTOLUCKY_URL)) end)
-                    ServerHopImmediate()
-                end
-            end
-            task.wait(0.8)
-        end
-        disableNoclip()
-        setState("Stopped")
-        autoThread = nil
-    end)
-end
-
-local function stopAuto()
-    stopRequested = true
-    _G.MT_AUTO = false
-    setState("Stopping")
-    uiLog("Stop requested")
-    disableNoclip()
-end
-
--- Toggle UI hook
-ToggleBtn.MouseButton1Click:Connect(function()
-    Toggled = not Toggled
-    _G.MT_AUTO = Toggled
-    updateToggleUI()
-    if Toggled then startAuto() else stopAuto() end
-end)
-
--- auto-start
-if Toggled then
-    task.spawn(function() task.wait(0.25); startAuto() end)
-end
-
--- ensure noclip on character spawn
-lp.CharacterAdded:Connect(function(char)
-    task.wait(0.5)
-    if _G.MT_AUTO then
-        enableNoclipForCharacter(char)
-        if not autoThread then startAuto() end
-    end
-end)
-
--- debug control
-getgenv().MT_AutoLucky_vFinal = {
-    IsRunning = function() return _G.MT_AUTO end,
-    Start = function() _G.MT_AUTO = true; startAuto() end,
-    Stop = function() _G.MT_AUTO = false; stopAuto() end,
-}
