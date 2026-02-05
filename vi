@@ -1,0 +1,109 @@
+-- Load Rayfield UI Library
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- Tạo Window
+local Window = Rayfield:CreateWindow({
+   Name = "Trap ESP",
+   LoadingTitle = "Loading Trap ESP",
+   LoadingSubtitle = "by Script",
+   ConfigurationSaving = {
+      Enabled = false,
+      FolderName = nil,
+      FileName = "TrapESP"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvite",
+      RememberJoins = true
+   },
+   KeySystem = false
+})
+
+-- Tạo Tab
+local Tab = Window:CreateTab("Main", 4483362458)
+
+-- Biến lưu trạng thái
+local showTrapsEnabled = false
+local highlightedTraps = {}
+
+-- Hàm hiển thị tất cả traps
+local function showAllTraps()
+   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   
+   for _, trap in pairs(trapsFolder:GetChildren()) do
+      if trap:IsA("Model") or trap:IsA("Folder") then
+         local hitbox = trap:FindFirstChild("Hitbox")
+         if hitbox and hitbox:IsA("BasePart") then
+            -- Kiểm tra xem trap đã được highlight chưa
+            if not highlightedTraps[hitbox] then
+               hitbox.Transparency = 0.5
+               hitbox.Color = Color3.fromRGB(255, 0, 0)
+               hitbox.Material = Enum.Material.Neon
+               highlightedTraps[hitbox] = true
+            end
+         end
+      end
+   end
+end
+
+-- Hàm ẩn tất cả traps
+local function hideAllTraps()
+   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   
+   for _, trap in pairs(trapsFolder:GetChildren()) do
+      if trap:IsA("Model") or trap:IsA("Folder") then
+         local hitbox = trap:FindFirstChild("Hitbox")
+         if hitbox and hitbox:IsA("BasePart") then
+            hitbox.Transparency = 1
+            highlightedTraps[hitbox] = nil
+         end
+      end
+   end
+end
+
+-- Hàm theo dõi trap mới
+local function monitorNewTraps()
+   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   
+   trapsFolder.ChildAdded:Connect(function(trap)
+      if showTrapsEnabled then
+         task.wait(0.1) -- Đợi trap load hoàn toàn
+         if trap:IsA("Model") or trap:IsA("Folder") then
+            local hitbox = trap:FindFirstChild("Hitbox")
+            if hitbox and hitbox:IsA("BasePart") then
+               hitbox.Transparency = 0.5
+               hitbox.Color = Color3.fromRGB(255, 0, 0)
+               hitbox.Material = Enum.Material.Neon
+               highlightedTraps[hitbox] = true
+            end
+         end
+      end
+   end)
+end
+
+-- Tạo Toggle cho Show All Traps
+local Toggle = Tab:CreateToggle({
+   Name = "Show All Traps",
+   CurrentValue = false,
+   Flag = "ShowTrapsToggle",
+   Callback = function(Value)
+      showTrapsEnabled = Value
+      
+      if Value then
+         showAllTraps()
+      else
+         hideAllTraps()
+      end
+   end,
+})
+
+-- Bắt đầu theo dõi trap mới
+monitorNewTraps()
+
+-- Thông báo load thành công
+Rayfield:Notify({
+   Title = "Script Loaded",
+   Content = "Trap ESP is ready!",
+   Duration = 3,
+   Image = 4483362458,
+})
