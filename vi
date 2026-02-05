@@ -1,5 +1,9 @@
--- Load Rayfield UI Library
+-- Load Rayfield UI Library V2
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- Services
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
 -- Tạo Window
 local Window = Rayfield:CreateWindow({
@@ -25,21 +29,115 @@ local Tab = Window:CreateTab("Main", 4483362458)
 -- Biến lưu trạng thái
 local showTrapsEnabled = false
 local highlightedTraps = {}
+local avatarGuis = {}
+
+-- Hàm lấy UserID từ username
+local function getUserIdFromUsername(username)
+   local success, userId = pcall(function()
+      return Players:GetUserIdFromNameAsync(username)
+   end)
+   if success then
+      return userId
+   else
+      return nil
+   end
+end
+
+-- Hàm tạo BillboardGui với avatar
+local function createAvatarGui(hitbox, username)
+   -- Xóa GUI cũ nếu có
+   if avatarGuis[hitbox] then
+      avatarGuis[hitbox]:Destroy()
+      avatarGuis[hitbox] = nil
+   end
+   
+   -- Tạo BillboardGui
+   local billboardGui = Instance.new("BillboardGui")
+   billboardGui.Name = "TrapAvatarESP"
+   billboardGui.Adornee = hitbox
+   billboardGui.Size = UDim2.new(0, 100, 0, 100)
+   billboardGui.StudsOffset = Vector3.new(0, 5, 0)
+   billboardGui.AlwaysOnTop = true
+   billboardGui.MaxDistance = math.huge
+   billboardGui.Parent = hitbox
+   
+   -- Tạo Frame container
+   local frame = Instance.new("Frame")
+   frame.Size = UDim2.new(1, 0, 1, 0)
+   frame.BackgroundTransparency = 0.3
+   frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+   frame.BorderSizePixel = 2
+   frame.BorderColor3 = Color3.fromRGB(255, 0, 0)
+   frame.Parent = billboardGui
+   
+   -- Tạo UICorner cho frame
+   local corner = Instance.new("UICorner")
+   corner.CornerRadius = UDim.new(0.2, 0)
+   corner.Parent = frame
+   
+   -- Tạo ImageLabel cho avatar
+   local avatarImage = Instance.new("ImageLabel")
+   avatarImage.Size = UDim2.new(0.8, 0, 0.8, 0)
+   avatarImage.Position = UDim2.new(0.1, 0, 0.05, 0)
+   avatarImage.BackgroundTransparency = 1
+   avatarImage.ScaleType = Enum.ScaleType.Fit
+   avatarImage.Parent = frame
+   
+   -- Tạo UICorner cho avatar
+   local avatarCorner = Instance.new("UICorner")
+   avatarCorner.CornerRadius = UDim.new(0.5, 0) -- Bo tròn hình tròn
+   avatarCorner.Parent = avatarImage
+   
+   -- Tạo TextLabel cho username
+   local nameLabel = Instance.new("TextLabel")
+   nameLabel.Size = UDim2.new(1, 0, 0.15, 0)
+   nameLabel.Position = UDim2.new(0, 0, 0.85, 0)
+   nameLabel.BackgroundTransparency = 1
+   nameLabel.Text = username
+   nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+   nameLabel.TextScaled = true
+   nameLabel.Font = Enum.Font.GothamBold
+   nameLabel.TextStrokeTransparency = 0.5
+   nameLabel.Parent = frame
+   
+   -- Lấy avatar từ UserID
+   local userId = getUserIdFromUsername(username)
+   if userId then
+      local avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150&format=png"
+      avatarImage.Image = avatarUrl
+   else
+      -- Nếu không lấy được userId, hiển thị icon mặc định
+      avatarImage.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
+   end
+   
+   -- Lưu reference
+   avatarGuis[hitbox] = billboardGui
+end
+
+-- Hàm hiển thị trap
+local function showTrap(hitbox, username)
+   -- Highlight hitbox
+   hitbox.Transparency = 0.5
+   hitbox.Color = Color3.fromRGB(255, 0, 0)
+   hitbox.Material = Enum.Material.Neon
+   
+   -- Tạo avatar GUI
+   createAvatarGui(hitbox, username)
+   
+   highlightedTraps[hitbox] = true
+end
 
 -- Hàm hiển thị tất cả traps
 local function showAllTraps()
-   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
    
    for _, trap in pairs(trapsFolder:GetChildren()) do
       if trap:IsA("Model") or trap:IsA("Folder") then
          local hitbox = trap:FindFirstChild("Hitbox")
          if hitbox and hitbox:IsA("BasePart") then
-            -- Kiểm tra xem trap đã được highlight chưa
             if not highlightedTraps[hitbox] then
-               hitbox.Transparency = 0.5
-               hitbox.Color = Color3.fromRGB(255, 0, 0)
-               hitbox.Material = Enum.Material.Neon
-               highlightedTraps[hitbox] = true
+               local username = trap.Name
+               showTrap(hitbox, username)
             end
          end
       end
@@ -48,13 +146,21 @@ end
 
 -- Hàm ẩn tất cả traps
 local function hideAllTraps()
-   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
    
    for _, trap in pairs(trapsFolder:GetChildren()) do
       if trap:IsA("Model") or trap:IsA("Folder") then
          local hitbox = trap:FindFirstChild("Hitbox")
          if hitbox and hitbox:IsA("BasePart") then
+            -- Ẩn hitbox
             hitbox.Transparency = 1
+            
+            -- Xóa avatar GUI
+            if avatarGuis[hitbox] then
+               avatarGuis[hitbox]:Destroy()
+               avatarGuis[hitbox] = nil
+            end
+            
             highlightedTraps[hitbox] = nil
          end
       end
@@ -63,19 +169,29 @@ end
 
 -- Hàm theo dõi trap mới
 local function monitorNewTraps()
-   local trapsFolder = game:GetService("Workspace"):WaitForChild("Game"):WaitForChild("Traps")
+   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
    
    trapsFolder.ChildAdded:Connect(function(trap)
       if showTrapsEnabled then
-         task.wait(0.1) -- Đợi trap load hoàn toàn
+         task.wait(0.1)
          if trap:IsA("Model") or trap:IsA("Folder") then
             local hitbox = trap:FindFirstChild("Hitbox")
             if hitbox and hitbox:IsA("BasePart") then
-               hitbox.Transparency = 0.5
-               hitbox.Color = Color3.fromRGB(255, 0, 0)
-               hitbox.Material = Enum.Material.Neon
-               highlightedTraps[hitbox] = true
+               local username = trap.Name
+               showTrap(hitbox, username)
             end
+         end
+      end
+   end)
+   
+   -- Theo dõi trap bị xóa
+   trapsFolder.ChildRemoved:Connect(function(trap)
+      if trap:IsA("Model") or trap:IsA("Folder") then
+         local hitbox = trap:FindFirstChild("Hitbox")
+         if hitbox and avatarGuis[hitbox] then
+            avatarGuis[hitbox]:Destroy()
+            avatarGuis[hitbox] = nil
+            highlightedTraps[hitbox] = nil
          end
       end
    end)
@@ -97,13 +213,30 @@ local Toggle = Tab:CreateToggle({
    end,
 })
 
+-- Tạo Slider cho kích thước avatar
+local Slider = Tab:CreateSlider({
+   Name = "Avatar Size",
+   Range = {50, 200},
+   Increment = 10,
+   CurrentValue = 100,
+   Flag = "AvatarSizeSlider",
+   Callback = function(Value)
+      -- Cập nhật kích thước tất cả avatar
+      for hitbox, gui in pairs(avatarGuis) do
+         if gui and gui.Parent then
+            gui.Size = UDim2.new(0, Value, 0, Value)
+         end
+      end
+   end,
+})
+
 -- Bắt đầu theo dõi trap mới
 monitorNewTraps()
 
 -- Thông báo load thành công
 Rayfield:Notify({
    Title = "Script Loaded",
-   Content = "Trap ESP is ready!",
+   Content = "Trap ESP with Avatars is ready!",
    Duration = 3,
    Image = 4483362458,
 })
