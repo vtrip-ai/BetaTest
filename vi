@@ -1,14 +1,18 @@
--- Load Rayfield UI Library V2
+-- Load Rayfield UI Library
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Services
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+-- Local Player
+local LocalPlayer = Players.LocalPlayer
 
 -- Tạo Window
 local Window = Rayfield:CreateWindow({
-   Name = "Trap ESP",
-   LoadingTitle = "Loading Trap ESP",
+   Name = "Trap ESP & Auto Money",
+   LoadingTitle = "Loading Script",
    LoadingSubtitle = "by Script",
    ConfigurationSaving = {
       Enabled = false,
@@ -23,13 +27,19 @@ local Window = Rayfield:CreateWindow({
    KeySystem = false
 })
 
--- Tạo Tab
-local Tab = Window:CreateTab("Main", 4483362458)
+-- Tạo Tabs
+local TrapTab = Window:CreateTab("Trap ESP", 4483362458)
+local FarmTab = Window:CreateTab("Auto Farm", 4483362458)
 
 -- Biến lưu trạng thái
 local showTrapsEnabled = false
 local highlightedTraps = {}
 local avatarGuis = {}
+local avatarSize = 100
+local autoMoneyEnabled = false
+local autoMoneyConnection = nil
+local originalWinPadPosition = nil
+local originalWinPadCanCollide = nil
 
 -- Hàm lấy UserID từ username
 local function getUserIdFromUsername(username)
@@ -43,7 +53,7 @@ local function getUserIdFromUsername(username)
    end
 end
 
--- Hàm tạo BillboardGui với avatar
+-- Hàm tạo BillboardGui với avatar (size cố định, không scale)
 local function createAvatarGui(hitbox, username)
    -- Xóa GUI cũ nếu có
    if avatarGuis[hitbox] then
@@ -55,10 +65,15 @@ local function createAvatarGui(hitbox, username)
    local billboardGui = Instance.new("BillboardGui")
    billboardGui.Name = "TrapAvatarESP"
    billboardGui.Adornee = hitbox
-   billboardGui.Size = UDim2.new(0, 100, 0, 100)
+   billboardGui.Size = UDim2.new(0, avatarSize, 0, avatarSize)
    billboardGui.StudsOffset = Vector3.new(0, 5, 0)
    billboardGui.AlwaysOnTop = true
    billboardGui.MaxDistance = math.huge
+   
+   -- QUAN TRỌNG: Tắt các thuộc tính scale theo khoảng cách
+   billboardGui.SizeOffset = Vector2.new(0, 0)
+   billboardGui.StudsOffsetWorldSpace = Vector3.new(0, 0, 0)
+   
    billboardGui.Parent = hitbox
    
    -- Tạo Frame container
@@ -77,7 +92,7 @@ local function createAvatarGui(hitbox, username)
    
    -- Tạo ImageLabel cho avatar
    local avatarImage = Instance.new("ImageLabel")
-   avatarImage.Size = UDim2.new(0.8, 0, 0.8, 0)
+   avatarImage.Size = UDim2.new(0.8, 0, 0.7, 0)
    avatarImage.Position = UDim2.new(0.1, 0, 0.05, 0)
    avatarImage.BackgroundTransparency = 1
    avatarImage.ScaleType = Enum.ScaleType.Fit
@@ -85,13 +100,13 @@ local function createAvatarGui(hitbox, username)
    
    -- Tạo UICorner cho avatar
    local avatarCorner = Instance.new("UICorner")
-   avatarCorner.CornerRadius = UDim.new(0.5, 0) -- Bo tròn hình tròn
+   avatarCorner.CornerRadius = UDim.new(0.5, 0)
    avatarCorner.Parent = avatarImage
    
    -- Tạo TextLabel cho username
    local nameLabel = Instance.new("TextLabel")
-   nameLabel.Size = UDim2.new(1, 0, 0.15, 0)
-   nameLabel.Position = UDim2.new(0, 0, 0.85, 0)
+   nameLabel.Size = UDim2.new(1, 0, 0.2, 0)
+   nameLabel.Position = UDim2.new(0, 0, 0.78, 0)
    nameLabel.BackgroundTransparency = 1
    nameLabel.Text = username
    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -100,13 +115,18 @@ local function createAvatarGui(hitbox, username)
    nameLabel.TextStrokeTransparency = 0.5
    nameLabel.Parent = frame
    
+   -- Thêm UITextSizeConstraint để text không quá nhỏ
+   local textConstraint = Instance.new("UITextSizeConstraint")
+   textConstraint.MinTextSize = 8
+   textConstraint.MaxTextSize = 14
+   textConstraint.Parent = nameLabel
+   
    -- Lấy avatar từ UserID
    local userId = getUserIdFromUsername(username)
    if userId then
       local avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150&format=png"
       avatarImage.Image = avatarUrl
    else
-      -- Nếu không lấy được userId, hiển thị icon mặc định
       avatarImage.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
    end
    
@@ -152,10 +172,8 @@ local function hideAllTraps()
       if trap:IsA("Model") or trap:IsA("Folder") then
          local hitbox = trap:FindFirstChild("Hitbox")
          if hitbox and hitbox:IsA("BasePart") then
-            -- Ẩn hitbox
             hitbox.Transparency = 1
             
-            -- Xóa avatar GUI
             if avatarGuis[hitbox] then
                avatarGuis[hitbox]:Destroy()
                avatarGuis[hitbox] = nil
@@ -184,7 +202,6 @@ local function monitorNewTraps()
       end
    end)
    
-   -- Theo dõi trap bị xóa
    trapsFolder.ChildRemoved:Connect(function(trap)
       if trap:IsA("Model") or trap:IsA("Folder") then
          local hitbox = trap:FindFirstChild("Hitbox")
@@ -197,8 +214,77 @@ local function monitorNewTraps()
    end)
 end
 
--- Tạo Toggle cho Show All Traps
-local Toggle = Tab:CreateToggle({
+-- Hàm Auto Money
+local function startAutoMoney()
+   local success, winPad = pcall(function()
+      return Workspace:WaitForChild("Lobby"):WaitForChild("Obby"):WaitForChild("Platforms"):WaitForChild("WinPad")
+   end)
+   
+   if not success or not winPad then
+      Rayfield:Notify({
+         Title = "Error",
+         Content = "Cannot find WinPad!",
+         Duration = 3,
+         Image = 4483362458,
+      })
+      return
+   end
+   
+   -- Lưu vị trí và trạng thái collision gốc
+   if not originalWinPadPosition then
+      originalWinPadPosition = winPad.CFrame
+   end
+   if originalWinPadCanCollide == nil then
+      originalWinPadCanCollide = winPad.CanCollide
+   end
+   
+   -- Tắt collision để không đẩy player
+   winPad.CanCollide = false
+   
+   autoMoneyConnection = RunService.Heartbeat:Connect(function()
+      if autoMoneyEnabled then
+         local character = LocalPlayer.Character
+         if character and character:FindFirstChild("HumanoidRootPart") then
+            local hrp = character.HumanoidRootPart
+            -- Dịch chuyển WinPad đến vị trí player (dưới chân)
+            winPad.CFrame = hrp.CFrame + Vector3.new(0, -3, 0)
+            
+            -- Đảm bảo CanCollide luôn tắt
+            if winPad.CanCollide then
+               winPad.CanCollide = false
+            end
+         end
+      end
+   end)
+end
+
+-- Hàm dừng Auto Money
+local function stopAutoMoney()
+   if autoMoneyConnection then
+      autoMoneyConnection:Disconnect()
+      autoMoneyConnection = nil
+   end
+   
+   -- Di chuyển WinPad về vị trí xa và khôi phục collision
+   local success, winPad = pcall(function()
+      return Workspace:WaitForChild("Lobby"):WaitForChild("Obby"):WaitForChild("Platforms"):WaitForChild("WinPad")
+   end)
+   
+   if success and winPad then
+      -- Di chuyển đến vị trí xa (10000 studs trên trời)
+      winPad.CFrame = CFrame.new(0, 10000, 0)
+      
+      -- Khôi phục collision về trạng thái ban đầu
+      if originalWinPadCanCollide ~= nil then
+         winPad.CanCollide = originalWinPadCanCollide
+      end
+   end
+end
+
+-- ===== TRAP ESP TAB =====
+
+-- Toggle Show All Traps
+local TrapToggle = TrapTab:CreateToggle({
    Name = "Show All Traps",
    CurrentValue = false,
    Flag = "ShowTrapsToggle",
@@ -213,19 +299,50 @@ local Toggle = Tab:CreateToggle({
    end,
 })
 
--- Tạo Slider cho kích thước avatar
-local Slider = Tab:CreateSlider({
+-- Slider kích thước avatar
+local SizeSlider = TrapTab:CreateSlider({
    Name = "Avatar Size",
-   Range = {50, 200},
-   Increment = 10,
+   Range = {10, 200},
+   Increment = 5,
    CurrentValue = 100,
    Flag = "AvatarSizeSlider",
    Callback = function(Value)
+      avatarSize = Value
       -- Cập nhật kích thước tất cả avatar
       for hitbox, gui in pairs(avatarGuis) do
          if gui and gui.Parent then
             gui.Size = UDim2.new(0, Value, 0, Value)
          end
+      end
+   end,
+})
+
+-- ===== AUTO FARM TAB =====
+
+-- Toggle Auto Money
+local MoneyToggle = FarmTab:CreateToggle({
+   Name = "Auto Money",
+   CurrentValue = false,
+   Flag = "AutoMoneyToggle",
+   Callback = function(Value)
+      autoMoneyEnabled = Value
+      
+      if Value then
+         startAutoMoney()
+         Rayfield:Notify({
+            Title = "Auto Money",
+            Content = "Auto Money Enabled! (NoClip)",
+            Duration = 2,
+            Image = 4483362458,
+         })
+      else
+         stopAutoMoney()
+         Rayfield:Notify({
+            Title = "Auto Money",
+            Content = "Auto Money Disabled!",
+            Duration = 2,
+            Image = 4483362458,
+         })
       end
    end,
 })
@@ -236,7 +353,7 @@ monitorNewTraps()
 -- Thông báo load thành công
 Rayfield:Notify({
    Title = "Script Loaded",
-   Content = "Trap ESP with Avatars is ready!",
+   Content = "All features ready!",
    Duration = 3,
    Image = 4483362458,
 })
