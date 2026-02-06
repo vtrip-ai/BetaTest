@@ -5,355 +5,1087 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
+local Camera = Workspace.CurrentCamera
 
 -- Local Player
 local LocalPlayer = Players.LocalPlayer
 
--- Tạo Window
+-- Window
 local Window = Rayfield:CreateWindow({
-   Name = "Trap ESP & Auto Money",
-   LoadingTitle = "Loading Script",
-   LoadingSubtitle = "by Script",
-   ConfigurationSaving = {
-      Enabled = false,
-      FolderName = nil,
-      FileName = "TrapESP"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvite",
-      RememberJoins = true
-   },
+   Name = "Trap ESP v4",
+   LoadingTitle = "Loading",
+   LoadingSubtitle = "Big Tech Edition",
+   ConfigurationSaving = { Enabled = false },
+   Discord = { Enabled = false },
    KeySystem = false
 })
 
--- Tạo Tabs
+-- Tabs
 local TrapTab = Window:CreateTab("Trap ESP", 4483362458)
+local AlertTab = Window:CreateTab("Alerts", 4483362458)
 local FarmTab = Window:CreateTab("Auto Farm", 4483362458)
 
--- Biến lưu trạng thái
+-- Variables
 local showTrapsEnabled = false
+local trapAlertEnabled = true
 local highlightedTraps = {}
 local avatarGuis = {}
-local avatarSize = 100
+local groupGuis = {}
+local espSize = 42
 local autoMoneyEnabled = false
 local autoMoneyConnection = nil
+local updateConnection = nil
 local originalWinPadPosition = nil
 local originalWinPadCanCollide = nil
+local myTrapPositions = {}
+local alertedTraps = {}
+local alertCooldowns = {}
 
--- Hàm lấy UserID từ username
-local function getUserIdFromUsername(username)
-   local success, userId = pcall(function()
-      return Players:GetUserIdFromNameAsync(username)
+-- Settings
+local NEAR_DISTANCE = 25
+local MID_DISTANCE = 60
+local FAR_FADE_START = 80
+local FAR_FADE_END = 200
+local GROUP_THRESHOLD = 14
+local TRAP_NEAR_MY_TRAP_DIST = 15
+local ALERT_COOLDOWN = 10
+
+-- Colors (Big Tech palette)
+local COLORS = {
+   bg = Color3.fromRGB(10, 10, 14),
+   bgSecondary = Color3.fromRGB(18, 18, 25),
+   accent = Color3.fromRGB(99, 102, 241),
+   danger = Color3.fromRGB(239, 68, 68),
+   warning = Color3.fromRGB(245, 158, 11),
+   success = Color3.fromRGB(34, 197, 94),
+   text = Color3.fromRGB(248, 250, 252),
+   textDim = Color3.fromRGB(148, 163, 184),
+   border = Color3.fromRGB(30, 30, 45),
+   groupBg = Color3.fromRGB(15, 15, 22),
+   dangerBg = Color3.fromRGB(30, 10, 10),
+}
+
+-- Cache
+local userIdCache = {}
+local avatarUrlCache = {}
+
+local function getUserId(username)
+   if userIdCache[username] then return userIdCache[username] end
+   local ok, id = pcall(Players.GetUserIdFromNameAsync, Players, username)
+   if ok then
+      userIdCache[username] = id
+      avatarUrlCache[username] = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. id .. "&width=100&height=100&format=png"
+      return id
+   end
+   return nil
+end
+
+local function getAvatarUrl(username)
+   if avatarUrlCache[username] then return avatarUrlCache[username] end
+   getUserId(username)
+   return avatarUrlCache[username] or "rbxasset://textures/ui/GuiImagePlaceholder.png"
+end
+
+-- ============================================
+-- ALERT SYSTEM: Cảnh báo khi ai đặt bẫy gần bẫy mình
+-- ============================================
+local alertScreenGui = Instance.new("ScreenGui")
+alertScreenGui.Name = "TrapAlertUI"
+alertScreenGui.ResetOnSpawn = false
+alertScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+alertScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local alertContainer = Instance.new("Frame")
+alertContainer.Name = "AlertContainer"
+alertContainer.Size = UDim2.new(0, 320, 1, 0)
+alertContainer.Position = UDim2.new(1, -330, 0, 10)
+alertContainer.BackgroundTransparency = 1
+alertContainer.Parent = alertScreenGui
+
+local alertLayout = Instance.new("UIListLayout")
+alertLayout.SortOrder = Enum.SortOrder.LayoutOrder
+alertLayout.Padding = UDim.new(0, 6)
+alertLayout.Parent = alertContainer
+
+local function showAlert(username, distance)
+   local now = tick()
+   local key = username
+   if alertCooldowns[key] and (now - alertCooldowns[key]) < ALERT_COOLDOWN then return end
+   alertCooldowns[key] = now
+
+   -- Notification sound effect (visual shake)
+   local alertFrame = Instance.new("Frame")
+   alertFrame.Name = "Alert_" .. username
+   alertFrame.Size = UDim2.new(1, 0, 0, 64)
+   alertFrame.BackgroundColor3 = COLORS.dangerBg
+   alertFrame.BackgroundTransparency = 0.05
+   alertFrame.BorderSizePixel = 0
+   alertFrame.Parent = alertContainer
+
+   Instance.new("UICorner", alertFrame).CornerRadius = UDim.new(0, 10)
+
+   local alertStroke = Instance.new("UIStroke")
+   alertStroke.Color = COLORS.danger
+   alertStroke.Thickness = 1.5
+   alertStroke.Parent = alertFrame
+
+   -- Left accent bar
+   local leftBar = Instance.new("Frame")
+   leftBar.Size = UDim2.new(0, 3, 0.7, 0)
+   leftBar.Position = UDim2.new(0, 6, 0.15, 0)
+   leftBar.BackgroundColor3 = COLORS.danger
+   leftBar.BorderSizePixel = 0
+   leftBar.Parent = alertFrame
+   Instance.new("UICorner", leftBar).CornerRadius = UDim.new(0.5, 0)
+
+   -- Mini avatar
+   local miniAvatar = Instance.new("ImageLabel")
+   miniAvatar.Size = UDim2.new(0, 36, 0, 36)
+   miniAvatar.Position = UDim2.new(0, 16, 0.5, -18)
+   miniAvatar.BackgroundColor3 = COLORS.bgSecondary
+   miniAvatar.BackgroundTransparency = 0.3
+   miniAvatar.Image = getAvatarUrl(username)
+   miniAvatar.ScaleType = Enum.ScaleType.Fit
+   miniAvatar.Parent = alertFrame
+   Instance.new("UICorner", miniAvatar).CornerRadius = UDim.new(1, 0)
+
+   local miniStroke = Instance.new("UIStroke")
+   miniStroke.Color = COLORS.danger
+   miniStroke.Thickness = 1.5
+   miniStroke.Parent = miniAvatar
+
+   -- Alert title
+   local title = Instance.new("TextLabel")
+   title.Size = UDim2.new(1, -65, 0, 18)
+   title.Position = UDim2.new(0, 58, 0, 10)
+   title.BackgroundTransparency = 1
+   title.Text = "⚠ TRAP NEAR YOURS"
+   title.TextColor3 = COLORS.danger
+   title.Font = Enum.Font.GothamBold
+   title.TextSize = 11
+   title.TextXAlignment = Enum.TextXAlignment.Left
+   title.TextStrokeTransparency = 0.3
+   title.Parent = alertFrame
+
+   -- Alert detail
+   local detail = Instance.new("TextLabel")
+   detail.Size = UDim2.new(1, -65, 0, 16)
+   detail.Position = UDim2.new(0, 58, 0, 30)
+   detail.BackgroundTransparency = 1
+   detail.Text = username .. " • " .. math.floor(distance) .. "m away"
+   detail.TextColor3 = COLORS.textDim
+   detail.Font = Enum.Font.GothamMedium
+   detail.TextSize = 10
+   detail.TextXAlignment = Enum.TextXAlignment.Left
+   detail.Parent = alertFrame
+
+   -- Time label
+   local timeLabel = Instance.new("TextLabel")
+   timeLabel.Size = UDim2.new(0, 40, 0, 12)
+   timeLabel.Position = UDim2.new(1, -46, 0, 8)
+   timeLabel.BackgroundTransparency = 1
+   timeLabel.Text = "now"
+   timeLabel.TextColor3 = COLORS.textDim
+   timeLabel.Font = Enum.Font.Gotham
+   timeLabel.TextSize = 9
+   timeLabel.TextXAlignment = Enum.TextXAlignment.Right
+   timeLabel.Parent = alertFrame
+
+   -- Slide in animation
+   alertFrame.Position = UDim2.new(1, 0, 0, 0)
+   local tweenIn = game:GetService("TweenService"):Create(alertFrame, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+      Position = UDim2.new(0, 0, 0, 0)
+   })
+   tweenIn:Play()
+
+   -- Flash border
+   task.spawn(function()
+      for i = 1, 3 do
+         alertStroke.Transparency = 0
+         task.wait(0.15)
+         alertStroke.Transparency = 0.5
+         task.wait(0.15)
+      end
+      alertStroke.Transparency = 0
    end)
-   if success then
-      return userId
-   else
-      return nil
+
+   -- Auto dismiss after 5s
+   task.delay(5, function()
+      if alertFrame and alertFrame.Parent then
+         local tweenOut = game:GetService("TweenService"):Create(alertFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, 50, 0, 0),
+            BackgroundTransparency = 1
+         })
+         tweenOut:Play()
+         tweenOut.Completed:Wait()
+         alertFrame:Destroy()
+      end
+   end)
+
+   -- Also Rayfield notify
+   Rayfield:Notify({
+      Title = "⚠ Trap Alert",
+      Content = username .. " placed trap " .. math.floor(distance) .. "m near your trap!",
+      Duration = 4,
+   })
+end
+
+-- Track my traps
+local function updateMyTraps()
+   myTrapPositions = {}
+   local ok, folder = pcall(function()
+      return Workspace:WaitForChild("Game"):WaitForChild("Traps")
+   end)
+   if not ok then return end
+
+   for _, trap in pairs(folder:GetChildren()) do
+      if trap.Name == LocalPlayer.Name then
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb and hb:IsA("BasePart") then
+            table.insert(myTrapPositions, hb.Position)
+         end
+      end
    end
 end
 
--- Hàm tạo BillboardGui với avatar (size cố định, không scale)
-local function createAvatarGui(hitbox, username)
-   -- Xóa GUI cũ nếu có
-   if avatarGuis[hitbox] then
-      avatarGuis[hitbox]:Destroy()
-      avatarGuis[hitbox] = nil
+local function checkTrapNearMine(username, hitboxPos)
+   if not trapAlertEnabled then return end
+   if username == LocalPlayer.Name then return end
+
+   updateMyTraps()
+   for _, myPos in ipairs(myTrapPositions) do
+      local dist = (hitboxPos - myPos).Magnitude
+      if dist < TRAP_NEAR_MY_TRAP_DIST then
+         showAlert(username, dist)
+         break
+      end
    end
-   
-   -- Tạo BillboardGui
-   local billboardGui = Instance.new("BillboardGui")
-   billboardGui.Name = "TrapAvatarESP"
-   billboardGui.Adornee = hitbox
-   billboardGui.Size = UDim2.new(0, avatarSize, 0, avatarSize)
-   billboardGui.StudsOffset = Vector3.new(0, 5, 0)
-   billboardGui.AlwaysOnTop = true
-   billboardGui.MaxDistance = math.huge
-   
-   -- QUAN TRỌNG: Tắt các thuộc tính scale theo khoảng cách
-   billboardGui.SizeOffset = Vector2.new(0, 0)
-   billboardGui.StudsOffsetWorldSpace = Vector3.new(0, 0, 0)
-   
-   billboardGui.Parent = hitbox
-   
-   -- Tạo Frame container
-   local frame = Instance.new("Frame")
-   frame.Size = UDim2.new(1, 0, 1, 0)
-   frame.BackgroundTransparency = 0.3
-   frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-   frame.BorderSizePixel = 2
-   frame.BorderColor3 = Color3.fromRGB(255, 0, 0)
-   frame.Parent = billboardGui
-   
-   -- Tạo UICorner cho frame
-   local corner = Instance.new("UICorner")
-   corner.CornerRadius = UDim.new(0.2, 0)
-   corner.Parent = frame
-   
-   -- Tạo ImageLabel cho avatar
-   local avatarImage = Instance.new("ImageLabel")
-   avatarImage.Size = UDim2.new(0.8, 0, 0.7, 0)
-   avatarImage.Position = UDim2.new(0.1, 0, 0.05, 0)
-   avatarImage.BackgroundTransparency = 1
-   avatarImage.ScaleType = Enum.ScaleType.Fit
-   avatarImage.Parent = frame
-   
-   -- Tạo UICorner cho avatar
-   local avatarCorner = Instance.new("UICorner")
-   avatarCorner.CornerRadius = UDim.new(0.5, 0)
-   avatarCorner.Parent = avatarImage
-   
-   -- Tạo TextLabel cho username
-   local nameLabel = Instance.new("TextLabel")
-   nameLabel.Size = UDim2.new(1, 0, 0.2, 0)
-   nameLabel.Position = UDim2.new(0, 0, 0.78, 0)
-   nameLabel.BackgroundTransparency = 1
-   nameLabel.Text = username
-   nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-   nameLabel.TextScaled = true
-   nameLabel.Font = Enum.Font.GothamBold
-   nameLabel.TextStrokeTransparency = 0.5
-   nameLabel.Parent = frame
-   
-   -- Thêm UITextSizeConstraint để text không quá nhỏ
-   local textConstraint = Instance.new("UITextSizeConstraint")
-   textConstraint.MinTextSize = 8
-   textConstraint.MaxTextSize = 14
-   textConstraint.Parent = nameLabel
-   
-   -- Lấy avatar từ UserID
-   local userId = getUserIdFromUsername(username)
-   if userId then
-      local avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150&format=png"
-      avatarImage.Image = avatarUrl
-   else
-      avatarImage.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
-   end
-   
-   -- Lưu reference
-   avatarGuis[hitbox] = billboardGui
 end
 
--- Hàm hiển thị trap
+-- ============================================
+-- GROUPING SYSTEM
+-- ============================================
+local function buildGroups()
+   local trapList = {}
+   local ok, folder = pcall(function()
+      return Workspace:WaitForChild("Game"):WaitForChild("Traps")
+   end)
+   if not ok then return {} end
+
+   for _, trap in pairs(folder:GetChildren()) do
+      if trap.Name ~= LocalPlayer.Name then
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb and hb:IsA("BasePart") then
+            table.insert(trapList, { hitbox = hb, name = trap.Name, pos = hb.Position })
+         end
+      end
+   end
+
+   -- Union-Find grouping
+   local parent = {}
+   for i = 1, #trapList do parent[i] = i end
+
+   local function find(x)
+      while parent[x] ~= x do parent[x] = parent[parent[x]] x = parent[x] end
+      return x
+   end
+   local function union(a, b)
+      local ra, rb = find(a), find(b)
+      if ra ~= rb then parent[ra] = rb end
+   end
+
+   for i = 1, #trapList do
+      for j = i + 1, #trapList do
+         local dx = trapList[i].pos.X - trapList[j].pos.X
+         local dz = trapList[i].pos.Z - trapList[j].pos.Z
+         local hDist = math.sqrt(dx * dx + dz * dz)
+         if hDist < GROUP_THRESHOLD then
+            union(i, j)
+         end
+      end
+   end
+
+   -- Build groups
+   local groups = {}
+   for i, t in ipairs(trapList) do
+      local root = find(i)
+      if not groups[root] then groups[root] = {} end
+      table.insert(groups[root], t)
+   end
+
+   return groups
+end
+
+-- ============================================
+-- CREATE SINGLE ESP (cho trap đơn lẻ)
+-- ============================================
+local function createSingleESP(hitbox, username)
+   if username == LocalPlayer.Name then return false end
+   if avatarGuis[hitbox] then avatarGuis[hitbox]:Destroy() avatarGuis[hitbox] = nil end
+
+   local gui = Instance.new("BillboardGui")
+   gui.Name = "TrapESP"
+   gui.Adornee = hitbox
+   gui.Size = UDim2.new(0, espSize, 0, espSize)
+   gui.StudsOffset = Vector3.new(0, 4, 0)
+   gui.AlwaysOnTop = true
+   gui.MaxDistance = math.huge
+   gui.LightInfluence = 0
+   gui.Parent = hitbox
+
+   -- Card
+   local card = Instance.new("Frame")
+   card.Name = "Card"
+   card.Size = UDim2.new(1, 0, 1, 0)
+   card.BackgroundColor3 = COLORS.bg
+   card.BackgroundTransparency = 0.02
+   card.BorderSizePixel = 0
+   card.Parent = gui
+   Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+
+   local stroke = Instance.new("UIStroke")
+   stroke.Name = "Stroke"
+   stroke.Color = COLORS.border
+   stroke.Thickness = 1
+   stroke.Transparency = 0
+   stroke.Parent = card
+
+   -- Top accent line
+   local topLine = Instance.new("Frame")
+   topLine.Name = "TopLine"
+   topLine.Size = UDim2.new(0.85, 0, 0, 2)
+   topLine.Position = UDim2.new(0.075, 0, 0, 0)
+   topLine.BackgroundColor3 = COLORS.accent
+   topLine.BorderSizePixel = 0
+   topLine.ZIndex = 3
+   topLine.Parent = card
+   Instance.new("UICorner", topLine).CornerRadius = UDim.new(0, 2)
+
+   -- Avatar circle
+   local avatarBg = Instance.new("Frame")
+   avatarBg.Name = "AvatarBg"
+   avatarBg.Size = UDim2.new(0.5, 0, 0.42, 0)
+   avatarBg.Position = UDim2.new(0.25, 0, 0.06, 0)
+   avatarBg.BackgroundColor3 = COLORS.bgSecondary
+   avatarBg.BackgroundTransparency = 0.2
+   avatarBg.Parent = card
+   Instance.new("UICorner", avatarBg).CornerRadius = UDim.new(1, 0)
+
+   local avStroke = Instance.new("UIStroke")
+   avStroke.Name = "AvStroke"
+   avStroke.Color = COLORS.border
+   avStroke.Thickness = 1.5
+   avStroke.Parent = avatarBg
+
+   local img = Instance.new("ImageLabel")
+   img.Name = "Img"
+   img.Size = UDim2.new(0.82, 0, 0.82, 0)
+   img.Position = UDim2.new(0.09, 0, 0.09, 0)
+   img.BackgroundTransparency = 1
+   img.ScaleType = Enum.ScaleType.Fit
+   img.Image = getAvatarUrl(username)
+   img.Parent = avatarBg
+   Instance.new("UICorner", img).CornerRadius = UDim.new(1, 0)
+
+   -- Status dot
+   local statusDot = Instance.new("Frame")
+   statusDot.Name = "StatusDot"
+   statusDot.Size = UDim2.new(0.14, 0, 0.14, 0)
+   statusDot.Position = UDim2.new(0.78, 0, 0.02, 0)
+   statusDot.BackgroundColor3 = COLORS.success
+   statusDot.BorderSizePixel = 0
+   statusDot.ZIndex = 5
+   statusDot.Parent = avatarBg
+   Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+   local dotStroke = Instance.new("UIStroke")
+   dotStroke.Color = COLORS.bg
+   dotStroke.Thickness = 1.5
+   dotStroke.Parent = statusDot
+
+   -- Name
+   local nameL = Instance.new("TextLabel")
+   nameL.Name = "NameL"
+   nameL.Size = UDim2.new(0.9, 0, 0.16, 0)
+   nameL.Position = UDim2.new(0.05, 0, 0.51, 0)
+   nameL.BackgroundTransparency = 1
+   nameL.Text = username
+   nameL.TextColor3 = COLORS.text
+   nameL.TextScaled = true
+   nameL.Font = Enum.Font.GothamMedium
+   nameL.TextStrokeTransparency = 0.3
+   nameL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+   nameL.Parent = card
+   local nc = Instance.new("UITextSizeConstraint")
+   nc.MinTextSize = 4 ; nc.MaxTextSize = 11 ; nc.Parent = nameL
+
+   -- Distance pill
+   local distPill = Instance.new("Frame")
+   distPill.Name = "DistPill"
+   distPill.Size = UDim2.new(0.55, 0, 0.14, 0)
+   distPill.Position = UDim2.new(0.225, 0, 0.69, 0)
+   distPill.BackgroundColor3 = COLORS.bgSecondary
+   distPill.BackgroundTransparency = 0.2
+   distPill.BorderSizePixel = 0
+   distPill.Parent = card
+   Instance.new("UICorner", distPill).CornerRadius = UDim.new(0.5, 0)
+
+   local distL = Instance.new("TextLabel")
+   distL.Name = "DistL"
+   distL.Size = UDim2.new(1, 0, 1, 0)
+   distL.BackgroundTransparency = 1
+   distL.Text = "..."
+   distL.TextColor3 = COLORS.textDim
+   distL.TextScaled = true
+   distL.Font = Enum.Font.GothamMedium
+   distL.Parent = distPill
+   local dcc = Instance.new("UITextSizeConstraint")
+   dcc.MinTextSize = 3 ; dcc.MaxTextSize = 9 ; dcc.Parent = distL
+
+   -- Pointer
+   local ptr = Instance.new("TextLabel")
+   ptr.Name = "Ptr"
+   ptr.Size = UDim2.new(0.12, 0, 0.06, 0)
+   ptr.Position = UDim2.new(0.44, 0, 0.92, 0)
+   ptr.BackgroundTransparency = 1
+   ptr.Text = "▼"
+   ptr.TextColor3 = COLORS.accent
+   ptr.TextScaled = true
+   ptr.Font = Enum.Font.GothamBold
+   ptr.TextStrokeTransparency = 0.3
+   ptr.Parent = card
+
+   avatarGuis[hitbox] = gui
+   return true
+end
+
+-- ============================================
+-- CREATE GROUP ESP (nhiều trap gần nhau)
+-- ============================================
+local function clearGroupGuis()
+   for key, gui in pairs(groupGuis) do
+      if gui and gui.Parent then gui:Destroy() end
+   end
+   groupGuis = {}
+end
+
+local function createGroupESP(group)
+   -- Tìm center và anchor hitbox
+   local cx, cy, cz = 0, 0, 0
+   local names = {}
+   local nameSet = {}
+   for _, t in ipairs(group) do
+      cx = cx + t.pos.X
+      cy = cy + t.pos.Y
+      cz = cz + t.pos.Z
+      if not nameSet[t.name] then
+         nameSet[t.name] = true
+         table.insert(names, t.name)
+      end
+   end
+   cx, cy, cz = cx / #group, cy / #group, cz / #group
+
+   -- Anchor: hitbox gần center nhất
+   local anchor = group[1].hitbox
+   local minD = math.huge
+   for _, t in ipairs(group) do
+      local d = (t.pos - Vector3.new(cx, cy, cz)).Magnitude
+      if d < minD then minD = d ; anchor = t.hitbox end
+   end
+
+   local count = #group
+   local uniqueCount = #names
+
+   -- Tính kích thước group card
+   local cardW = espSize + math.min(uniqueCount - 1, 3) * 12
+   local cardH = espSize + 8
+
+   local gui = Instance.new("BillboardGui")
+   gui.Name = "GroupESP"
+   gui.Adornee = anchor
+   gui.Size = UDim2.new(0, cardW, 0, cardH)
+   gui.StudsOffset = Vector3.new(0, 5, 0)
+   gui.AlwaysOnTop = true
+   gui.MaxDistance = math.huge
+   gui.LightInfluence = 0
+   gui.Parent = anchor
+
+   -- Card
+   local card = Instance.new("Frame")
+   card.Name = "Card"
+   card.Size = UDim2.new(1, 0, 1, 0)
+   card.BackgroundColor3 = COLORS.groupBg
+   card.BackgroundTransparency = 0.02
+   card.BorderSizePixel = 0
+   card.Parent = gui
+   Instance.new("UICorner", card).CornerRadius = UDim.new(0, 10)
+
+   local stroke = Instance.new("UIStroke")
+   stroke.Name = "Stroke"
+   stroke.Color = COLORS.accent
+   stroke.Thickness = 1.5
+   stroke.Parent = card
+
+   -- Top accent
+   local topLine = Instance.new("Frame")
+   topLine.Name = "TopLine"
+   topLine.Size = UDim2.new(0.9, 0, 0, 2)
+   topLine.Position = UDim2.new(0.05, 0, 0, 0)
+   topLine.BackgroundColor3 = COLORS.accent
+   topLine.BorderSizePixel = 0
+   topLine.ZIndex = 3
+   topLine.Parent = card
+   Instance.new("UICorner", topLine).CornerRadius = UDim.new(0, 2)
+
+   -- Badge (count)
+   local badge = Instance.new("Frame")
+   badge.Name = "Badge"
+   badge.Size = UDim2.new(0, 22, 0, 14)
+   badge.Position = UDim2.new(1, -26, 0, 4)
+   badge.BackgroundColor3 = COLORS.danger
+   badge.BorderSizePixel = 0
+   badge.ZIndex = 6
+   badge.Parent = card
+   Instance.new("UICorner", badge).CornerRadius = UDim.new(0.4, 0)
+
+   local badgeText = Instance.new("TextLabel")
+   badgeText.Size = UDim2.new(1, 0, 1, 0)
+   badgeText.BackgroundTransparency = 1
+   badgeText.Text = tostring(count)
+   badgeText.TextColor3 = COLORS.text
+   badgeText.Font = Enum.Font.GothamBold
+   badgeText.TextSize = 9
+   badgeText.ZIndex = 7
+   badgeText.Parent = badge
+
+   -- Stacked avatars (tối đa 4)
+   local showCount = math.min(uniqueCount, 4)
+   local avatarSize2 = math.floor(cardH * 0.42)
+   local overlap = math.floor(avatarSize2 * 0.3)
+   local totalW = avatarSize2 + (showCount - 1) * (avatarSize2 - overlap)
+   local startX = math.floor((cardW - totalW) / 2)
+
+   for i = 1, showCount do
+      local uname = names[i]
+      local ring = Instance.new("Frame")
+      ring.Name = "AvatarRing_" .. i
+      ring.Size = UDim2.new(0, avatarSize2, 0, avatarSize2)
+      ring.Position = UDim2.new(0, startX + (i - 1) * (avatarSize2 - overlap), 0, 6)
+      ring.BackgroundColor3 = COLORS.bg
+      ring.BackgroundTransparency = 0
+      ring.ZIndex = 10 + (showCount - i)
+      ring.Parent = card
+      Instance.new("UICorner", ring).CornerRadius = UDim.new(1, 0)
+
+      local rs = Instance.new("UIStroke")
+      rs.Color = COLORS.border
+      rs.Thickness = 1.5
+      rs.Parent = ring
+
+      local im = Instance.new("ImageLabel")
+      im.Size = UDim2.new(0.82, 0, 0.82, 0)
+      im.Position = UDim2.new(0.09, 0, 0.09, 0)
+      im.BackgroundTransparency = 1
+      im.ScaleType = Enum.ScaleType.Fit
+      im.Image = getAvatarUrl(uname)
+      im.ZIndex = 11 + (showCount - i)
+      im.Parent = ring
+      Instance.new("UICorner", im).CornerRadius = UDim.new(1, 0)
+   end
+
+   -- "+" indicator if more than 4
+   if uniqueCount > 4 then
+      local moreLabel = Instance.new("TextLabel")
+      moreLabel.Size = UDim2.new(0, avatarSize2, 0, avatarSize2)
+      moreLabel.Position = UDim2.new(0, startX + showCount * (avatarSize2 - overlap), 0, 6)
+      moreLabel.BackgroundColor3 = COLORS.bgSecondary
+      moreLabel.Text = "+" .. (uniqueCount - 4)
+      moreLabel.TextColor3 = COLORS.textDim
+      moreLabel.Font = Enum.Font.GothamBold
+      moreLabel.TextSize = 9
+      moreLabel.ZIndex = 10
+      moreLabel.Parent = card
+      Instance.new("UICorner", moreLabel).CornerRadius = UDim.new(1, 0)
+   end
+
+   -- Names row
+   local displayNames = {}
+   for i = 1, math.min(uniqueCount, 3) do
+      table.insert(displayNames, names[i])
+   end
+   local nameText = table.concat(displayNames, ", ")
+   if uniqueCount > 3 then nameText = nameText .. " +" .. (uniqueCount - 3) end
+
+   local namesL = Instance.new("TextLabel")
+   namesL.Name = "NamesL"
+   namesL.Size = UDim2.new(0.92, 0, 0.18, 0)
+   namesL.Position = UDim2.new(0.04, 0, 0.52, 0)
+   namesL.BackgroundTransparency = 1
+   namesL.Text = nameText
+   namesL.TextColor3 = COLORS.text
+   namesL.TextScaled = true
+   namesL.Font = Enum.Font.GothamMedium
+   namesL.TextStrokeTransparency = 0.3
+   namesL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+   namesL.Parent = card
+   local nnc = Instance.new("UITextSizeConstraint")
+   nnc.MinTextSize = 3 ; nnc.MaxTextSize = 10 ; nnc.Parent = namesL
+
+   -- Distance pill
+   local distPill = Instance.new("Frame")
+   distPill.Name = "DistPill"
+   distPill.Size = UDim2.new(0.45, 0, 0.13, 0)
+   distPill.Position = UDim2.new(0.05, 0, 0.74, 0)
+   distPill.BackgroundColor3 = COLORS.bgSecondary
+   distPill.BackgroundTransparency = 0.2
+   distPill.BorderSizePixel = 0
+   distPill.Parent = card
+   Instance.new("UICorner", distPill).CornerRadius = UDim.new(0.5, 0)
+
+   local distL = Instance.new("TextLabel")
+   distL.Name = "DistL"
+   distL.Size = UDim2.new(1, 0, 1, 0)
+   distL.BackgroundTransparency = 1
+   distL.Text = "..."
+   distL.TextColor3 = COLORS.textDim
+   distL.TextScaled = true
+   distL.Font = Enum.Font.GothamMedium
+   distL.Parent = distPill
+   local ddc = Instance.new("UITextSizeConstraint")
+   ddc.MinTextSize = 3 ; ddc.MaxTextSize = 9 ; ddc.Parent = distL
+
+   -- Count label
+   local countL = Instance.new("TextLabel")
+   countL.Name = "CountL"
+   countL.Size = UDim2.new(0.4, 0, 0.13, 0)
+   countL.Position = UDim2.new(0.55, 0, 0.74, 0)
+   countL.BackgroundTransparency = 1
+   countL.Text = count .. " traps"
+   countL.TextColor3 = COLORS.warning
+   countL.TextScaled = true
+   countL.Font = Enum.Font.GothamBold
+   countL.TextStrokeTransparency = 0.4
+   countL.Parent = card
+   local clc = Instance.new("UITextSizeConstraint")
+   clc.MinTextSize = 3 ; clc.MaxTextSize = 9 ; clc.Parent = countL
+
+   -- Pointer
+   local ptr = Instance.new("TextLabel")
+   ptr.Name = "Ptr"
+   ptr.Size = UDim2.new(0.1, 0, 0.05, 0)
+   ptr.Position = UDim2.new(0.45, 0, 0.93, 0)
+   ptr.BackgroundTransparency = 1
+   ptr.Text = "▼"
+   ptr.TextColor3 = COLORS.accent
+   ptr.TextScaled = true
+   ptr.Font = Enum.Font.GothamBold
+   ptr.Parent = card
+
+   local groupKey = tostring(anchor) .. "_group"
+   groupGuis[groupKey] = gui
+
+   -- Hide individual ESPs for grouped traps
+   for _, t in ipairs(group) do
+      if avatarGuis[t.hitbox] then
+         avatarGuis[t.hitbox].Enabled = false
+      end
+   end
+
+   return gui, anchor
+end
+
+-- ============================================
+-- REBUILD ALL ESPs (group + single)
+-- ============================================
+local function rebuildAllESP()
+   -- Clear groups
+   clearGroupGuis()
+
+   -- Show all individual first
+   for hb, gui in pairs(avatarGuis) do
+      if gui and gui.Parent then gui.Enabled = true end
+   end
+
+   if not showTrapsEnabled then return end
+
+   local groups = buildGroups()
+
+   for _, group in pairs(groups) do
+      if #group >= 2 then
+         -- Group ESP
+         createGroupESP(group)
+      end
+      -- Singles stay visible (Enabled = true already)
+   end
+end
+
+-- ============================================
+-- UPDATE LOOP
+-- ============================================
+local function startUpdater()
+   if updateConnection then updateConnection:Disconnect() end
+
+   local rebuildTimer = 0
+
+   updateConnection = RunService.Heartbeat:Connect(function(dt)
+      local char = LocalPlayer.Character
+      if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+      local playerPos = char.HumanoidRootPart.Position
+
+      -- Rebuild groups periodically
+      rebuildTimer = rebuildTimer + dt
+      if rebuildTimer >= 2 then
+         rebuildTimer = 0
+         rebuildAllESP()
+      end
+
+      -- Update individual ESPs
+      for hitbox, gui in pairs(avatarGuis) do
+         if gui and gui.Parent and gui.Enabled and hitbox and hitbox.Parent then
+            local dist = (hitbox.Position - playerPos).Magnitude
+            local card = gui:FindFirstChild("Card")
+            if not card then continue end
+
+            local stroke = card:FindFirstChild("Stroke")
+            local statusDot = nil
+            local avatarBg = card:FindFirstChild("AvatarBg")
+            if avatarBg then statusDot = avatarBg:FindFirstChild("StatusDot") end
+            local avStroke = avatarBg and avatarBg:FindFirstChild("AvStroke")
+            local distPill = card:FindFirstChild("DistPill")
+            local distL = distPill and distPill:FindFirstChild("DistL")
+            local topLine = card:FindFirstChild("TopLine")
+            local ptr = card:FindFirstChild("Ptr")
+            local hl = hitbox:FindFirstChild("TrapHL")
+
+            -- Dynamic size
+            local sf
+            if dist < NEAR_DISTANCE then sf = 1
+            elseif dist < FAR_FADE_START then sf = 1 - 0.3 * ((dist - NEAR_DISTANCE) / (FAR_FADE_START - NEAR_DISTANCE))
+            else sf = 0.7 - 0.35 * math.min(1, (dist - FAR_FADE_START) / (FAR_FADE_END - FAR_FADE_START)) end
+            sf = math.max(0.25, sf)
+            local fs = math.max(10, espSize * sf)
+            gui.Size = UDim2.new(0, fs, 0, fs)
+
+            -- Transparency
+            local alpha = 0
+            if dist > FAR_FADE_START then
+               alpha = math.min(0.65, (dist - FAR_FADE_START) / (FAR_FADE_END - FAR_FADE_START))
+            end
+            card.BackgroundTransparency = 0.02 + alpha * 0.5
+
+            -- Color
+            local color
+            if dist < NEAR_DISTANCE then
+               local p = math.abs(math.sin(tick() * 5))
+               color = Color3.fromRGB(239, math.floor(50 + 30 * p), math.floor(50 + 30 * p))
+               if stroke then stroke.Thickness = 1 + p * 1.5 end
+               if statusDot then statusDot.BackgroundColor3 = COLORS.danger ; statusDot.Size = UDim2.new(0.12 + 0.04 * p, 0, 0.12 + 0.04 * p, 0) end
+            elseif dist < MID_DISTANCE then
+               color = COLORS.warning
+               if stroke then stroke.Thickness = 1 end
+               if statusDot then statusDot.BackgroundColor3 = COLORS.warning end
+            else
+               color = COLORS.success
+               if stroke then stroke.Thickness = 1 end
+               if statusDot then statusDot.BackgroundColor3 = COLORS.success end
+            end
+
+            if stroke then stroke.Color = color ; stroke.Transparency = alpha * 0.4 end
+            if topLine then topLine.BackgroundColor3 = color end
+            if ptr then ptr.TextColor3 = color end
+            if avStroke then avStroke.Color = color end
+            if distL then distL.Text = math.floor(dist) .. "m" end
+
+            if hl then
+               hl.FillColor = color
+               hl.OutlineColor = color
+               hl.FillTransparency = 0.75 + alpha * 0.2
+               hl.OutlineTransparency = alpha * 0.5
+            end
+         end
+      end
+
+      -- Update group ESPs
+      for key, gui in pairs(groupGuis) do
+         if gui and gui.Parent and gui.Adornee then
+            local anchor = gui.Adornee
+            local dist = (anchor.Position - playerPos).Magnitude
+            local card = gui:FindFirstChild("Card")
+            if not card then continue end
+
+            local stroke = card:FindFirstChild("Stroke")
+            local distPill = card:FindFirstChild("DistPill")
+            local distL = distPill and distPill:FindFirstChild("DistL")
+            local topLine = card:FindFirstChild("TopLine")
+            local ptr = card:FindFirstChild("Ptr")
+
+            -- Dynamic size for group
+            local sf
+            if dist < NEAR_DISTANCE then sf = 1
+            elseif dist < FAR_FADE_START then sf = 1 - 0.25 * ((dist - NEAR_DISTANCE) / (FAR_FADE_START - NEAR_DISTANCE))
+            else sf = 0.75 - 0.35 * math.min(1, (dist - FAR_FADE_START) / (FAR_FADE_END - FAR_FADE_START)) end
+            sf = math.max(0.3, sf)
+
+            local origW = espSize + 36
+            local origH = espSize + 8
+            gui.Size = UDim2.new(0, origW * sf, 0, origH * sf)
+
+            local alpha = 0
+            if dist > FAR_FADE_START then
+               alpha = math.min(0.6, (dist - FAR_FADE_START) / (FAR_FADE_END - FAR_FADE_START))
+            end
+            card.BackgroundTransparency = 0.02 + alpha * 0.5
+
+            local color
+            if dist < NEAR_DISTANCE then
+               local p = math.abs(math.sin(tick() * 5))
+               color = Color3.fromRGB(239, math.floor(50 + 30 * p), math.floor(50 + 30 * p))
+               if stroke then stroke.Thickness = 1.5 + p * 1.5 end
+            elseif dist < MID_DISTANCE then
+               color = COLORS.warning
+               if stroke then stroke.Thickness = 1.5 end
+            else
+               color = COLORS.accent
+               if stroke then stroke.Thickness = 1 end
+            end
+
+            if stroke then stroke.Color = color ; stroke.Transparency = alpha * 0.4 end
+            if topLine then topLine.BackgroundColor3 = color end
+            if ptr then ptr.TextColor3 = color end
+            if distL then distL.Text = math.floor(dist) .. "m" end
+         end
+      end
+   end)
+end
+
+local function stopUpdater()
+   if updateConnection then updateConnection:Disconnect() updateConnection = nil end
+end
+
+-- ============================================
+-- SHOW / HIDE
+-- ============================================
 local function showTrap(hitbox, username)
-   -- Highlight hitbox
-   hitbox.Transparency = 0.5
-   hitbox.Color = Color3.fromRGB(255, 0, 0)
+   if username == LocalPlayer.Name then return end
+
+   hitbox.Transparency = 0.6
+   hitbox.Color = Color3.fromRGB(120, 80, 200)
    hitbox.Material = Enum.Material.Neon
-   
-   -- Tạo avatar GUI
-   createAvatarGui(hitbox, username)
-   
+
+   if not hitbox:FindFirstChild("TrapHL") then
+      local hl = Instance.new("Highlight")
+      hl.Name = "TrapHL"
+      hl.FillColor = COLORS.accent
+      hl.FillTransparency = 0.75
+      hl.OutlineColor = COLORS.accent
+      hl.OutlineTransparency = 0
+      hl.Adornee = hitbox
+      hl.Parent = hitbox
+   end
+
+   createSingleESP(hitbox, username)
    highlightedTraps[hitbox] = true
+
+   -- Check alert
+   checkTrapNearMine(username, hitbox.Position)
 end
 
--- Hàm hiển thị tất cả traps
 local function showAllTraps()
-   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
-   
-   for _, trap in pairs(trapsFolder:GetChildren()) do
+   local ok, folder = pcall(function()
+      return Workspace:WaitForChild("Game"):WaitForChild("Traps")
+   end)
+   if not ok then return end
+
+   for _, trap in pairs(folder:GetChildren()) do
       if trap:IsA("Model") or trap:IsA("Folder") then
-         local hitbox = trap:FindFirstChild("Hitbox")
-         if hitbox and hitbox:IsA("BasePart") then
-            if not highlightedTraps[hitbox] then
-               local username = trap.Name
-               showTrap(hitbox, username)
-            end
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb and hb:IsA("BasePart") and not highlightedTraps[hb] then
+            showTrap(hb, trap.Name)
          end
       end
    end
+
+   rebuildAllESP()
+   startUpdater()
 end
 
--- Hàm ẩn tất cả traps
 local function hideAllTraps()
-   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
-   
-   for _, trap in pairs(trapsFolder:GetChildren()) do
+   stopUpdater()
+   clearGroupGuis()
+
+   local ok, folder = pcall(function()
+      return Workspace:WaitForChild("Game"):WaitForChild("Traps")
+   end)
+   if not ok then return end
+
+   for _, trap in pairs(folder:GetChildren()) do
       if trap:IsA("Model") or trap:IsA("Folder") then
-         local hitbox = trap:FindFirstChild("Hitbox")
-         if hitbox and hitbox:IsA("BasePart") then
-            hitbox.Transparency = 1
-            
-            if avatarGuis[hitbox] then
-               avatarGuis[hitbox]:Destroy()
-               avatarGuis[hitbox] = nil
-            end
-            
-            highlightedTraps[hitbox] = nil
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb and hb:IsA("BasePart") then
+            hb.Transparency = 1
+            local hl = hb:FindFirstChild("TrapHL")
+            if hl then hl:Destroy() end
+            if avatarGuis[hb] then avatarGuis[hb]:Destroy() avatarGuis[hb] = nil end
+            highlightedTraps[hb] = nil
          end
       end
    end
 end
 
--- Hàm theo dõi trap mới
-local function monitorNewTraps()
-   local trapsFolder = Workspace:WaitForChild("Game"):WaitForChild("Traps")
-   
-   trapsFolder.ChildAdded:Connect(function(trap)
-      if showTrapsEnabled then
-         task.wait(0.1)
-         if trap:IsA("Model") or trap:IsA("Folder") then
-            local hitbox = trap:FindFirstChild("Hitbox")
-            if hitbox and hitbox:IsA("BasePart") then
-               local username = trap.Name
-               showTrap(hitbox, username)
-            end
+-- ============================================
+-- MONITOR
+-- ============================================
+local function monitorTraps()
+   local ok, folder = pcall(function()
+      return Workspace:WaitForChild("Game"):WaitForChild("Traps")
+   end)
+   if not ok then return end
+
+   folder.ChildAdded:Connect(function(trap)
+      if not showTrapsEnabled then return end
+      task.wait(0.15)
+      if trap:IsA("Model") or trap:IsA("Folder") then
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb and hb:IsA("BasePart") then
+            showTrap(hb, trap.Name)
+            task.defer(rebuildAllESP)
          end
       end
    end)
-   
-   trapsFolder.ChildRemoved:Connect(function(trap)
+
+   folder.ChildRemoved:Connect(function(trap)
       if trap:IsA("Model") or trap:IsA("Folder") then
-         local hitbox = trap:FindFirstChild("Hitbox")
-         if hitbox and avatarGuis[hitbox] then
-            avatarGuis[hitbox]:Destroy()
-            avatarGuis[hitbox] = nil
-            highlightedTraps[hitbox] = nil
+         local hb = trap:FindFirstChild("Hitbox")
+         if hb then
+            local hl = hb:FindFirstChild("TrapHL")
+            if hl then hl:Destroy() end
+            if avatarGuis[hb] then avatarGuis[hb]:Destroy() avatarGuis[hb] = nil end
+            highlightedTraps[hb] = nil
          end
+         for h, g in pairs(avatarGuis) do
+            if not h.Parent then g:Destroy() avatarGuis[h] = nil highlightedTraps[h] = nil end
+         end
+         task.defer(rebuildAllESP)
       end
    end)
 end
 
--- Hàm Auto Money
+-- ============================================
+-- AUTO MONEY
+-- ============================================
 local function startAutoMoney()
-   local success, winPad = pcall(function()
+   local ok, wp = pcall(function()
       return Workspace:WaitForChild("Lobby"):WaitForChild("Obby"):WaitForChild("Platforms"):WaitForChild("WinPad")
    end)
-   
-   if not success or not winPad then
-      Rayfield:Notify({
-         Title = "Error",
-         Content = "Cannot find WinPad!",
-         Duration = 3,
-         Image = 4483362458,
-      })
+   if not ok or not wp then
+      Rayfield:Notify({ Title = "Error", Content = "WinPad not found!", Duration = 3 })
       return
    end
-   
-   -- Lưu vị trí và trạng thái collision gốc
-   if not originalWinPadPosition then
-      originalWinPadPosition = winPad.CFrame
-   end
-   if originalWinPadCanCollide == nil then
-      originalWinPadCanCollide = winPad.CanCollide
-   end
-   
-   -- Tắt collision để không đẩy player
-   winPad.CanCollide = false
-   
+   if not originalWinPadPosition then originalWinPadPosition = wp.CFrame end
+   if originalWinPadCanCollide == nil then originalWinPadCanCollide = wp.CanCollide end
+   wp.CanCollide = false
    autoMoneyConnection = RunService.Heartbeat:Connect(function()
-      if autoMoneyEnabled then
-         local character = LocalPlayer.Character
-         if character and character:FindFirstChild("HumanoidRootPart") then
-            local hrp = character.HumanoidRootPart
-            -- Dịch chuyển WinPad đến vị trí player (dưới chân)
-            winPad.CFrame = hrp.CFrame + Vector3.new(0, -3, 0)
-            
-            -- Đảm bảo CanCollide luôn tắt
-            if winPad.CanCollide then
-               winPad.CanCollide = false
-            end
-         end
+      if not autoMoneyEnabled then return end
+      local char = LocalPlayer.Character
+      if char and char:FindFirstChild("HumanoidRootPart") then
+         wp.CFrame = char.HumanoidRootPart.CFrame + Vector3.new(0, -3, 0)
+         if wp.CanCollide then wp.CanCollide = false end
       end
    end)
 end
 
--- Hàm dừng Auto Money
 local function stopAutoMoney()
-   if autoMoneyConnection then
-      autoMoneyConnection:Disconnect()
-      autoMoneyConnection = nil
-   end
-   
-   -- Di chuyển WinPad về vị trí xa và khôi phục collision
-   local success, winPad = pcall(function()
+   if autoMoneyConnection then autoMoneyConnection:Disconnect() autoMoneyConnection = nil end
+   local ok, wp = pcall(function()
       return Workspace:WaitForChild("Lobby"):WaitForChild("Obby"):WaitForChild("Platforms"):WaitForChild("WinPad")
    end)
-   
-   if success and winPad then
-      -- Di chuyển đến vị trí xa (10000 studs trên trời)
-      winPad.CFrame = CFrame.new(0, 10000, 0)
-      
-      -- Khôi phục collision về trạng thái ban đầu
-      if originalWinPadCanCollide ~= nil then
-         winPad.CanCollide = originalWinPadCanCollide
-      end
+   if ok and wp then
+      wp.CFrame = CFrame.new(0, 10000, 0)
+      if originalWinPadCanCollide ~= nil then wp.CanCollide = originalWinPadCanCollide end
    end
 end
 
--- ===== TRAP ESP TAB =====
+-- ============================================
+-- UI
+-- ============================================
 
--- Toggle Show All Traps
-local TrapToggle = TrapTab:CreateToggle({
-   Name = "Show All Traps",
+TrapTab:CreateToggle({
+   Name = "🔍 Trap ESP",
    CurrentValue = false,
-   Flag = "ShowTrapsToggle",
-   Callback = function(Value)
-      showTrapsEnabled = Value
-      
-      if Value then
-         showAllTraps()
-      else
-         hideAllTraps()
-      end
+   Flag = "ShowTraps",
+   Callback = function(v)
+      showTrapsEnabled = v
+      if v then showAllTraps() else hideAllTraps() end
    end,
 })
 
--- Slider kích thước avatar
-local SizeSlider = TrapTab:CreateSlider({
-   Name = "Avatar Size",
-   Range = {10, 200},
-   Increment = 5,
-   CurrentValue = 100,
-   Flag = "AvatarSizeSlider",
-   Callback = function(Value)
-      avatarSize = Value
-      -- Cập nhật kích thước tất cả avatar
-      for hitbox, gui in pairs(avatarGuis) do
-         if gui and gui.Parent then
-            gui.Size = UDim2.new(0, Value, 0, Value)
-         end
-      end
-   end,
+TrapTab:CreateSlider({
+   Name = "📐 ESP Size",
+   Range = {10, 120},
+   Increment = 2,
+   CurrentValue = 42,
+   Flag = "ESPSize",
+   Callback = function(v) espSize = v end,
 })
 
--- ===== AUTO FARM TAB =====
+TrapTab:CreateSlider({
+   Name = "📏 Group Threshold",
+   Range = {5, 30},
+   Increment = 1,
+   CurrentValue = 14,
+   Flag = "GroupThresh",
+   Callback = function(v) GROUP_THRESHOLD = v ; task.defer(rebuildAllESP) end,
+})
 
--- Toggle Auto Money
-local MoneyToggle = FarmTab:CreateToggle({
-   Name = "Auto Money",
+TrapTab:CreateSlider({
+   Name = "🔻 Fade Start",
+   Range = {40, 200},
+   Increment = 10,
+   CurrentValue = 80,
+   Flag = "FadeStart",
+   Callback = function(v) FAR_FADE_START = v end,
+})
+
+AlertTab:CreateToggle({
+   Name = "⚠ Alert: Trap Near Mine",
+   CurrentValue = true,
+   Flag = "TrapAlert",
+   Callback = function(v) trapAlertEnabled = v end,
+})
+
+AlertTab:CreateSlider({
+   Name = "📏 Alert Distance",
+   Range = {5, 40},
+   Increment = 1,
+   CurrentValue = 15,
+   Flag = "AlertDist",
+   Callback = function(v) TRAP_NEAR_MY_TRAP_DIST = v end,
+})
+
+AlertTab:CreateSlider({
+   Name = "⏱ Alert Cooldown (s)",
+   Range = {3, 30},
+   Increment = 1,
+   CurrentValue = 10,
+   Flag = "AlertCD",
+   Callback = function(v) ALERT_COOLDOWN = v end,
+})
+
+FarmTab:CreateToggle({
+   Name = "💰 Auto Money",
    CurrentValue = false,
-   Flag = "AutoMoneyToggle",
-   Callback = function(Value)
-      autoMoneyEnabled = Value
-      
-      if Value then
+   Flag = "AutoMoney",
+   Callback = function(v)
+      autoMoneyEnabled = v
+      if v then
          startAutoMoney()
-         Rayfield:Notify({
-            Title = "Auto Money",
-            Content = "Auto Money Enabled! (NoClip)",
-            Duration = 2,
-            Image = 4483362458,
-         })
+         Rayfield:Notify({ Title = "Auto Money", Content = "Enabled (NoClip)", Duration = 2 })
       else
          stopAutoMoney()
-         Rayfield:Notify({
-            Title = "Auto Money",
-            Content = "Auto Money Disabled!",
-            Duration = 2,
-            Image = 4483362458,
-         })
+         Rayfield:Notify({ Title = "Auto Money", Content = "Disabled", Duration = 2 })
       end
    end,
 })
 
--- Bắt đầu theo dõi trap mới
-monitorNewTraps()
-
--- Thông báo load thành công
-Rayfield:Notify({
-   Title = "Script Loaded",
-   Content = "All features ready!",
-   Duration = 3,
-   Image = 4483362458,
-})
+-- Init
+monitorTraps()
+Rayfield:Notify({ Title = "Trap ESP v4", Content = "Big Tech + Smart Grouping loaded!", Duration = 3 })
